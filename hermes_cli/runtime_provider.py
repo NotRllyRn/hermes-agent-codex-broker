@@ -972,6 +972,24 @@ def _openrouter_fallback(requested_provider, explicit_api_key, explicit_base_url
                                             explicit_base_url=explicit_base_url), requested_provider)
 
 
+def _codex_broker_runtime(provider: str, requested_provider: str) -> Optional[Dict[str, Any]]:
+    """Fail-closed broker bootstrap without reading native Codex credentials."""
+    if provider != "openai-codex":
+        return None
+    from agent.codex_broker import CodexBrokerLeaseManager
+
+    if CodexBrokerLeaseManager.from_environment() is None:
+        return None
+    return _runtime(
+        "openai-codex",
+        "codex_responses",
+        DEFAULT_CODEX_BASE_URL,
+        "broker-managed",
+        source="codex-broker",
+        requested_provider=requested_provider,
+    )
+
+
 def resolve_runtime_provider(*, requested: Optional[str] = None, explicit_api_key: Optional[str] = None,
                              explicit_base_url: Optional[str] = None, target_model: Optional[str] = None) -> Dict[str, Any]:
     """Resolve runtime provider credentials for agent execution. Ladder (order is behavior — each
@@ -1047,6 +1065,7 @@ def _ladder_rungs(requested_provider, explicit_api_key, explicit_base_url, targe
         yield _local_endpoint_bypass(requested_provider, explicit_api_key, explicit_base_url)
     provider = resolve_provider(requested_provider, explicit_api_key=explicit_api_key, explicit_base_url=explicit_base_url)
     model_cfg = _get_model_config()
+    yield _codex_broker_runtime(provider, requested_provider)
     yield _resolve_explicit_runtime(provider=provider, requested_provider=requested_provider, model_cfg=model_cfg,
                                     explicit_api_key=explicit_api_key, explicit_base_url=explicit_base_url,
                                     target_model=target_model)

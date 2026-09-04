@@ -31,7 +31,12 @@ def is_official_codex_base_url(base_url: str) -> bool:
         return False
 
 
-def codex_cloudflare_headers(access_token: str, *, base_url: str = CODEX_AUX_BASE_URL) -> Dict[str, str]:
+def codex_cloudflare_headers(
+    access_token: str,
+    *,
+    base_url: str = CODEX_AUX_BASE_URL,
+    account_id: str | None = None,
+) -> Dict[str, str]:
     """Identity and account headers for chatgpt.com/backend-api/codex.
 
     OpenAI requires third-party harnesses to identify themselves: the official
@@ -45,6 +50,8 @@ def codex_cloudflare_headers(access_token: str, *, base_url: str = CODEX_AUX_BAS
     else:
         headers = {"User-Agent": "codex_cli_rs/0.0.0 (Hermes Agent)", "originator": "codex_cli_rs"}
     headers.update(codex_account_headers(access_token))
+    if account_id:
+        headers["ChatGPT-Account-ID"] = account_id
     return headers
 
 
