@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 import math
 import os
 from pathlib import Path
@@ -22,9 +22,23 @@ class CodexBrokerError(RuntimeError):
 @dataclass(frozen=True)
 class Lease:
     account_id: str
+    account_label: str
     access_token: str
     chatgpt_account_id: str
     expires_at: str
+    short_remaining_percent: int | None
+    weekly_remaining_percent: int | None
+    short_resets_at: str | None
+    weekly_resets_at: str | None
+
+
+@dataclass(frozen=True)
+class BrokerStatus:
+    account_label: str
+    short_remaining_percent: int | None
+    weekly_remaining_percent: int | None
+    short_resets_at: str | None
+    weekly_resets_at: str | None
 
 
 InterruptCheck = Callable[[], bool]
@@ -49,6 +63,21 @@ def codex_broker_environment_present() -> bool:
     )
 
 
+def _reset_in(value: str) -> str:
+    minutes = max(
+        0,
+        math.ceil(
+            (datetime.fromisoformat(value.replace("Z", "+00:00")) - datetime.now(timezone.utc)).total_seconds()
+            / 60
+        ),
+    )
+    if minutes >= 1_440:
+        return f"{minutes // 1_440}d {(minutes % 1_440) // 60}h"
+    if minutes >= 60:
+        return f"{minutes // 60}h {minutes % 60}m"
+    return f"{minutes}m"
+
+
 class CodexBrokerLeaseManager:
     def __init__(self, url: str, client_key: str, ca_cert: str | None = None) -> None:
         parsed = urlparse(url)
@@ -63,7 +92,8 @@ class CodexBrokerLeaseManager:
         self._verify: bool | str = ca_cert or True
         self._lease_by_turn: dict[tuple[str, str], Lease] = {}
         self._preferred_by_session: dict[str, str] = {}
-        self._failed_turns: set[tuple[str, str]] = set()
+        self._status_by_session: dict[str, BrokerStatus] = {}
+        self._failed_accounts_by_turn: dict[tuple[str, str], set[str]] = {}
         self._lock = threading.RLock()
 
     @classmethod
@@ -104,9 +134,10 @@ class CodexBrokerLeaseManager:
             current = self._lease_by_turn.get(turn)
             if current is None:
                 raise CodexBrokerError("Codex Broker has no lease for this turn")
-            if turn in self._failed_turns:
+            failed = self._failed_accounts_by_turn.setdefault(turn, set())
+            if current.account_id in failed:
                 return None
-            self._failed_turns.add(turn)
+            failed.add(current.account_id)
             lease = self._route(
                 {
                     "session_id": session_id,
@@ -117,13 +148,31 @@ class CodexBrokerLeaseManager:
                 },
                 interrupted,
             )
+            if lease.account_id in failed:
+                return None
             self._remember(turn, lease)
             return lease
 
     def discard_turn(self, session_id: str, turn_id: str) -> None:
         with self._lock:
             self._lease_by_turn.pop((session_id, turn_id), None)
-            self._failed_turns.discard((session_id, turn_id))
+            self._failed_accounts_by_turn.pop((session_id, turn_id), None)
+
+    def status_for_session(self, session_id: str) -> BrokerStatus | None:
+        with self._lock:
+            return self._status_by_session.get(session_id)
+
+    @staticmethod
+    def format_status(status: BrokerStatus) -> str:
+        def window(remaining: int | None, reset: str | None) -> str:
+            percent = "?" if remaining is None else f"{remaining}%"
+            return f"{percent} (resets {_reset_in(reset)})" if reset else percent
+
+        return (
+            f"{status.account_label} · 5h "
+            f"{window(status.short_remaining_percent, status.short_resets_at)} · week "
+            f"{window(status.weekly_remaining_percent, status.weekly_resets_at)}"
+        )
 
     def clear_agent(self, agent: Any) -> None:
         """Remove turn credentials from the long-lived agent and client."""
@@ -167,6 +216,13 @@ class CodexBrokerLeaseManager:
     def _remember(self, turn: tuple[str, str], lease: Lease) -> None:
         self._lease_by_turn[turn] = lease
         self._preferred_by_session[turn[0]] = lease.account_id
+        self._status_by_session[turn[0]] = BrokerStatus(
+            lease.account_label,
+            lease.short_remaining_percent,
+            lease.weekly_remaining_percent,
+            lease.short_resets_at,
+            lease.weekly_resets_at,
+        )
 
     def _route(self, payload: dict[str, Any], interrupted: InterruptCheck) -> Lease:
         while True:
@@ -199,14 +255,21 @@ class CodexBrokerLeaseManager:
 
     @staticmethod
     def _parse_lease(body: dict[str, Any]) -> Lease:
-        fields = ("account_id", "access_token", "chatgpt_account_id", "expires_at")
-        if any(not isinstance(body.get(field), str) or not body[field] for field in fields):
+        strings = ("account_id", "account_label", "access_token", "chatgpt_account_id", "expires_at")
+        percents = ("short_remaining_percent", "weekly_remaining_percent")
+        resets = ("short_resets_at", "weekly_resets_at")
+        if any(not isinstance(body.get(field), str) or not body[field] for field in strings):
+            raise CodexBrokerError("Codex Broker returned an invalid lease")
+        if any(body.get(field) is not None and (isinstance(body[field], bool) or not isinstance(body[field], int)) for field in percents):
+            raise CodexBrokerError("Codex Broker returned an invalid lease")
+        if any(body.get(field) is not None and not isinstance(body[field], str) for field in resets):
             raise CodexBrokerError("Codex Broker returned an invalid lease")
         try:
-            datetime.fromisoformat(body["expires_at"].replace("Z", "+00:00"))
+            for value in (body["expires_at"], *(body[field] for field in resets if body.get(field))):
+                datetime.fromisoformat(value.replace("Z", "+00:00"))
         except ValueError as exc:
             raise CodexBrokerError("Codex Broker returned an invalid lease") from exc
-        return Lease(*(body[field] for field in fields))
+        return Lease(*(body[field] for field in (*strings, *percents, *resets)))
 
     @staticmethod
     def _wait(body: dict[str, Any], interrupted: InterruptCheck) -> None:
