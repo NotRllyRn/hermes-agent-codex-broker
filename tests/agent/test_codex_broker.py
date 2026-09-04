@@ -27,6 +27,8 @@ def lease_body(account: str = "public-a") -> dict[str, object]:
         "expires_at": "2099-01-01T00:00:00Z",
         "short_remaining_percent": 80,
         "weekly_remaining_percent": 60,
+        "short_resets_at": "2099-01-01T00:00:00Z",
+        "weekly_resets_at": "2099-01-02T00:00:00Z",
     }
 
 
@@ -109,22 +111,30 @@ def test_wait_retries_and_can_be_interrupted(monkeypatch: pytest.MonkeyPatch) ->
         manager.lease_for_turn("s", "interrupted", interrupted=lambda: interrupted)
 
 
-def test_replacement_reports_failure_once(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_replacement_walks_unique_accounts(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[dict[str, Any]] = []
 
     def post(_url, **kwargs):
         calls.append(kwargs["json"])
-        return Response(200, lease_body("public-b" if len(calls) > 1 else "public-a"))
+        account = ("public-a", "public-b", "public-c")[min(len(calls) - 1, 2)]
+        return Response(200, lease_body(account))
 
     monkeypatch.setattr("agent.codex_broker.httpx.post", post)
     manager = CodexBrokerLeaseManager("https://broker.test", "cbk_test")
     manager.lease_for_turn("s", "t", interrupted=lambda: False)
-    replacement = manager.replace_failed_lease("s", "t", "auth", interrupted=lambda: False)
-    assert replacement and replacement.account_id == "public-b"
+    second = manager.replace_failed_lease("s", "t", "auth", interrupted=lambda: False)
+    third = manager.replace_failed_lease("s", "t", "quota", interrupted=lambda: False)
+    assert second and second.account_id == "public-b"
+    assert third and third.account_id == "public-c"
     assert calls[1]["failed_account_id"] == "public-a"
     assert calls[1]["failure_kind"] == "auth"
+    assert calls[2]["failed_account_id"] == "public-b"
+    assert calls[2]["failure_kind"] == "quota"
     assert manager.replace_failed_lease("s", "t", "quota", interrupted=lambda: False) is None
-    assert len(calls) == 2
+    assert len(calls) == 4
+    status = manager.status_for_session("s")
+    assert status and status.account_label == "Primary"
+    assert "5h 80%" in manager.format_status(status)
 
 
 def test_apply_and_clear_agent_use_explicit_account_identity() -> None:
@@ -145,7 +155,20 @@ def test_apply_and_clear_agent_use_explicit_account_identity() -> None:
         _replace_primary_openai_client=lambda *, reason: reasons.append(reason) or True,
     )
     manager = CodexBrokerLeaseManager("https://broker.test", "cbk_test")
-    manager.apply_to_agent(agent, Lease("public", "secret", "upstream", "2099-01-01T00:00:00Z"))
+    manager.apply_to_agent(
+        agent,
+        Lease(
+            "public",
+            "Primary",
+            "secret",
+            "upstream",
+            "2099-01-01T00:00:00Z",
+            80,
+            60,
+            "2099-01-01T00:00:00Z",
+            "2099-01-02T00:00:00Z",
+        ),
+    )
     assert agent.api_key == "secret"
     assert agent._client_kwargs["default_headers"]["ChatGPT-Account-ID"] == "upstream"
     assert not {"authorization", "chatgpt-account-id", "user-agent"} & set(
