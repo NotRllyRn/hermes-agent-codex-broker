@@ -51,6 +51,28 @@ def test_agent_initializes_without_native_codex_credentials(
     assert getattr(agent, "_client_kwargs")["api_key"] == "broker-managed"
 
 
+def test_auxiliary_codex_never_reads_native_credentials(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    broker_env(monkeypatch)
+    from agent import auxiliary_client
+
+    monkeypatch.setattr(
+        auxiliary_client,
+        "_select_pool_entry",
+        lambda *_a, **_k: pytest.fail("native credential pool was read"),
+    )
+    monkeypatch.setattr(
+        auxiliary_client,
+        "_read_codex_access_token",
+        lambda: pytest.fail("native token file was read"),
+    )
+    assert auxiliary_client._build_codex_client("gpt-5.4") == (None, None)
+    assert auxiliary_client.resolve_provider_client(
+        "openai-codex", model="gpt-5.4", raw_codex=True
+    ) == (None, None)
+
+
 def test_broker_mode_rejects_other_provider(monkeypatch: pytest.MonkeyPatch) -> None:
     broker_env(monkeypatch)
     from run_agent import AIAgent

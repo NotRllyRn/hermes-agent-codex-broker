@@ -2726,6 +2726,10 @@ def _build_codex_client(model: str) -> Tuple[Optional[Any], Optional[str]]:
             "pass model explicitly (auxiliary.<task>.model in config.yaml)."
         )
         return None, None
+    from agent.codex_broker import codex_broker_environment_present
+    if codex_broker_environment_present():
+        logger.warning("Auxiliary Codex calls are disabled while turn-scoped Codex Broker routing is configured")
+        return None, None
     pool_present, entry = _select_pool_entry("openai-codex")
     codex_token = _pool_runtime_api_key(entry) if pool_present else None
     if codex_token:
@@ -4452,6 +4456,10 @@ def _resolve_openai_codex_branch(req: _ResolveRequest) -> _ResolveResult:
                        "or auxiliary.<task>.model for per-task aux routing).")
         return None, None
     no_token_msg = "resolve_provider_client: openai-codex requested but no Codex OAuth token found (run: hermes model)"
+    from agent.codex_broker import codex_broker_environment_present
+    if codex_broker_environment_present():
+        logger.warning("Auxiliary Codex calls are disabled while turn-scoped Codex Broker routing is configured")
+        return None, None
     if req.raw_codex:
         # Raw OpenAI client for callers needing responses.stream() (main agent loop).
         codex_token = _read_codex_access_token()

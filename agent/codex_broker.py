@@ -37,6 +37,18 @@ def codex_broker_configured() -> bool:
     )
 
 
+def codex_broker_environment_present() -> bool:
+    """Whether broker configuration was attempted, including a malformed partial setup."""
+    return any(
+        os.environ.get(name, "").strip()
+        for name in (
+            "HERMES_CODEX_BROKER_URL",
+            "HERMES_CODEX_BROKER_CLIENT_KEY",
+            "HERMES_CODEX_BROKER_CA_CERT",
+        )
+    )
+
+
 class CodexBrokerLeaseManager:
     def __init__(self, url: str, client_key: str, ca_cert: str | None = None) -> None:
         parsed = urlparse(url)
