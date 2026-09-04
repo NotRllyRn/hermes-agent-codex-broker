@@ -1378,6 +1378,9 @@ def _run_api_retry_loop(agent, s: _LoopState) -> Optional[Dict[str, Any]]:
                 )
                 agent._codex_broker_turn_id = broker_turn_id
                 broker.apply_to_agent(agent, lease)
+                status = broker.status_for_session(str(agent.session_id or ""))
+                if status is not None:
+                    agent._emit_status(f"Codex Broker account: {broker.format_status(status)}")
             _run_phase(build_api_request, agent, s)
             if _run_phase(perform_api_call, agent, s).action == "break":
                 return None

@@ -162,12 +162,17 @@ def handle_api_error(
                 )
                 if lease is not None:
                     broker.apply_to_agent(agent, lease)
+                    status = broker.status_for_session(str(agent.session_id or ""))
+                    if status is not None:
+                        agent._emit_status(
+                            f"Codex Broker account: {broker.format_status(status)}"
+                        )
             except InterruptedError:
                 return broker_failure("Interrupted while waiting for Codex Broker")
             except CodexBrokerError as exc:
                 return broker_failure(str(exc))
             if lease is None:
-                return broker_failure("Codex Broker replacement already attempted for this turn")
+                return broker_failure("Codex Broker returned an account already exhausted in this turn")
             return _verdict("continue")
 
     _recovered, recovered_with_pool = recover_after_classification(

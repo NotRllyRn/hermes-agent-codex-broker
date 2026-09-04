@@ -6,7 +6,7 @@ from __future__ import annotations
 import logging
 import re
 from collections.abc import Callable, Mapping, Sequence
-from typing import Any
+from typing import Any, cast
 
 from hermes_cli.commands import (
     COMMAND_REGISTRY, _is_gateway_available, _iter_plugin_command_entries, _resolve_config_gates)
@@ -159,8 +159,8 @@ def _prioritize_telegram_menu_candidates(
             "configured": configured_rank.get(raw_name, configured_rank.get(final_name)),
             "default": default_rank.get(final_name) if source == "core" else None}
         for tier, table in enumerate(tiers):
-            if indexes[table] is not None:
-                return (tier, indexes[table], stable_index)
+            if (index := indexes[table]) is not None:
+                return (tier, index, stable_index)
         return (len(tiers), 0, stable_index)
 
     return [c for _i, c in sorted(enumerate(candidates), key=lambda item: _rank(*item))]
@@ -240,7 +240,7 @@ def _collect_gateway_skill_entries(
                     out.append((name, _truncate_desc(desc, desc_limit), cmd_key, name))
         except Exception:
             pass
-        return _clamp_command_names(out, reserved_names)
+        return cast(list[tuple[str, str, str, str]], _clamp_command_names(out, reserved_names))
 
     def _plugin_rows():
         from hermes_cli.plugins import get_plugin_commands
@@ -368,7 +368,7 @@ _SLACK_RESERVED_COMMANDS = frozenset({
 # parity test reads this set. Aliases are never pinned ahead of canonicals.
 _SLACK_VIA_HERMES_ONLY = frozenset({
     "topup", "moa", "debug", "egress", "init", "version", "diff", "update", "heartbeat",
-    "refine", "review", "pause", "whoami", "platform", "insights"})
+    "refine", "review", "pause", "whoami", "platform", "insights", "broker-status"})
 
 
 def _sanitize_slack_name(raw: str) -> str:

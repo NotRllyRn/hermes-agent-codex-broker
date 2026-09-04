@@ -133,6 +133,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
                args_hint="[text | remove N | clear]", busy_policy="dispatch"),
     CommandDef("status", "Show session, model, token, and context info", "Session",
                busy_policy="dispatch"),
+    CommandDef("broker-status", "Show the current Codex Broker account and usage", "Session",
+               gateway_only=True, busy_policy="dispatch"),
     CommandDef("egress", "Show Docker egress proxy status", "Session",
                args_hint="[status]", subcommands=("status",), busy_policy="dispatch",
                busy_handler="egress", execute="egress"),
@@ -425,8 +427,8 @@ def _resolve_config_gates() -> set[str]:
         cfg = read_raw_config()
     except Exception:
         return set()
-    return {cmd.name for cmd in gated
-            if is_truthy_value(cfg_get(cfg, *cmd.gateway_config_gate.split(".")), default=False)}
+    return {cmd.name for cmd in gated if (gate := cmd.gateway_config_gate) is not None
+            and is_truthy_value(cfg_get(cfg, *gate.split(".")), default=False)}
 
 
 def _is_gateway_available(cmd: CommandDef, config_overrides: set[str] | None = None) -> bool:

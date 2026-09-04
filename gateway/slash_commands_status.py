@@ -36,6 +36,14 @@ def _int_value(value: Any) -> int:
         return 0
 
 
+def _float_value(value: Any) -> float:
+    """Safely coerce to float."""
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0
+
+
 def _n(obj, attr: str):
     return getattr(obj, attr, 0) or 0
 
@@ -270,6 +278,18 @@ class GatewayStatusCommandsMixin:
         lines += ["", t("gateway.status.platforms", platforms=', '.join(p.value for p in self.adapters))]
         return "\n".join(lines)
 
+    async def _handle_broker_status_command(self, event: MessageEvent) -> str:
+        """Show the last broker route selected for this session."""
+        session = await self.async_session_store.get_or_create_session(event.source)
+        agent = self._resident_agent_for(session.session_key)
+        broker = getattr(agent, "_codex_broker", None)
+        status = broker.status_for_session(session.session_id) if broker is not None else None
+        return (
+            f"Codex Broker account: {broker.format_status(status)}"
+            if broker is not None and status is not None
+            else "Codex Broker has no active route for this session"
+        )
+
     async def _status_session_db_facts(self, session_id: str):
         """``(title, session_row, db_total_tokens, persisted_route)`` for /status; each fail-open.
 
@@ -314,7 +334,7 @@ class GatewayStatusCommandsMixin:
         # Gauge path: real current-context figure
         if used > 0 and context_length > 0:
             pct = _pct(used, context_length)
-            filled = int(round(pct / 100 * 24))
+            filled = round(pct / 100 * 24)
             lines = [
                 t("gateway.context.header"), "",
                 t("gateway.context.model", model=model_name or "?"),
@@ -386,7 +406,7 @@ class GatewayStatusCommandsMixin:
             pending = agent is _AGENT_PENDING_SENTINEL
             agent_rows.append({
                 "session_key": session_key,
-                "elapsed": max(0, int(now - float(running_started.get(session_key, now)))),
+                "elapsed": max(0, round(now - _float_value(running_started.get(session_key, now)))),
                 "state": t("gateway.agents.state_starting") if pending else t("gateway.agents.state_running"),
                 "session_id": "" if pending else str(getattr(agent, "session_id", "") or ""),
                 "model": "" if pending else str(getattr(agent, "model", "") or ""),
@@ -415,7 +435,7 @@ class GatewayStatusCommandsMixin:
         def _proc_row(proc):
             cmd = _clip(" ".join(str(proc.get("command", "")).split()), 90)
             return [f"- `{proc.get('session_id', '?')}` · "
-                    f"{format_uptime_short(int(proc.get('uptime_seconds', 0)))} · `{cmd}`"]
+                    f"{format_uptime_short(_int_value(proc.get('uptime_seconds', 0)))} · `{cmd}`"]
 
         lines = [t("gateway.agents.header"), "", t("gateway.agents.active_agents", count=len(agent_rows))]
         lines += _capped_rows(list(enumerate(agent_rows, 1)), _agent_row)
@@ -609,7 +629,7 @@ class GatewayStatusCommandsMixin:
             elif flag == "--source" and value is not None:
                 source, i = value, i + 2
             else:
-                days = int(flag) if flag.isdigit() else days
+                days = _int_value(flag) if flag.isdigit() else days
                 i += 1
         try:
             from hermes_state_registry import acquire
