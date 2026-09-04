@@ -269,7 +269,10 @@ class CodexBrokerLeaseManager:
                 datetime.fromisoformat(value.replace("Z", "+00:00"))
         except ValueError as exc:
             raise CodexBrokerError("Codex Broker returned an invalid lease") from exc
-        return Lease(*(body[field] for field in (*strings, *percents, *resets)))
+        return Lease(
+            *(body[field] for field in (*strings, *percents)),
+            *(body.get(field) for field in resets),
+        )
 
     @staticmethod
     def _wait(body: dict[str, Any], interrupted: InterruptCheck) -> None:
