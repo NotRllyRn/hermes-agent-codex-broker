@@ -69,6 +69,15 @@ def test_lease_is_cached_per_turn_and_preferred_next_turn(
     assert calls[0]["headers"]["Authorization"] == "Bearer cbk_test"
 
 
+def test_lease_accepts_broker_without_reset_metadata() -> None:
+    body = lease_body()
+    body.pop("short_resets_at")
+    body.pop("weekly_resets_at")
+    lease = CodexBrokerLeaseManager._parse_lease(body)
+    assert lease.short_resets_at is None
+    assert lease.weekly_resets_at is None
+
+
 def test_wait_retries_and_can_be_interrupted(monkeypatch: pytest.MonkeyPatch) -> None:
     responses = iter(
         [
