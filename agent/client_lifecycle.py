@@ -488,6 +488,8 @@ class ClientLifecycleMixin:
         return self._replace_primary_openai_client(reason=reason)
 
     def _try_refresh_codex_client_credentials(self, *, force: bool = True) -> bool:
+        if getattr(self, "_codex_broker", None) is not None:
+            return False
         if self.api_mode != "codex_responses" or self.provider not in {"openai-codex", "xai-oauth"}:
             return False
         # No silent account swap: a non-singleton credential (manual pool entry, explicit api_key=) must not be

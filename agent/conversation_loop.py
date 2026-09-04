@@ -13,6 +13,7 @@ import logging
 import re
 import time
 from dataclasses import dataclass, field, fields
+from functools import wraps
 from typing import Any, Dict, List, Optional
 
 from agent.codex_responses_adapter import _summarize_user_message_for_log
@@ -1367,6 +1368,16 @@ def _run_api_retry_loop(agent, s: _LoopState) -> Optional[Dict[str, Any]]:
         if _ng.action == "break":
             return None
         try:
+            broker = getattr(agent, "_codex_broker", None)
+            broker_turn_id = str(s.turn_id)
+            if broker is not None and getattr(agent, "_codex_broker_turn_id", None) != broker_turn_id:
+                lease = broker.lease_for_turn(
+                    str(agent.session_id or ""),
+                    broker_turn_id,
+                    interrupted=lambda: bool(agent._interrupt_requested),
+                )
+                agent._codex_broker_turn_id = broker_turn_id
+                broker.apply_to_agent(agent, lease)
             _run_phase(build_api_request, agent, s)
             if _run_phase(perform_api_call, agent, s).action == "break":
                 return None
@@ -1387,6 +1398,27 @@ def _run_api_retry_loop(agent, s: _LoopState) -> Optional[Dict[str, Any]]:
     return None
 
 
+def _discard_codex_broker_turn(fn):
+    @wraps(fn)
+    def wrapped(agent, *args, **kwargs):
+        agent._codex_broker_turn_id = None
+        try:
+            return fn(agent, *args, **kwargs)
+        finally:
+            broker = getattr(agent, "_codex_broker", None)
+            turn_id = getattr(agent, "_codex_broker_turn_id", None)
+            if broker is not None and turn_id is not None:
+                broker.discard_turn(str(agent.session_id or ""), turn_id)
+                try:
+                    broker.clear_agent(agent)
+                except Exception:
+                    agent.client = None
+                    logger.exception("Codex Broker turn credential cleanup failed")
+
+    return wrapped
+
+
+@_discard_codex_broker_turn
 def run_conversation(
     agent,
     user_message: Any,
@@ -1420,10 +1452,11 @@ def run_conversation(
 
     # Adopt ~/.hermes/.env credential/base-url edits made since the last turn — a
     # Settings save updates .env, not this worker's client (#67821). No-op if unchanged.
-    try:
-        agent._try_refresh_env_client_credentials()
-    except Exception:
-        logger.debug("per-turn env credential refresh failed", exc_info=True)
+    if getattr(agent, "_codex_broker", None) is None:
+        try:
+            agent._try_refresh_env_client_credentials()
+        except Exception:
+            logger.debug("per-turn env credential refresh failed", exc_info=True)
 
     # Per-turn setup: build_turn_context mutates ``agent`` and returns the locals the loop reads.
     try:

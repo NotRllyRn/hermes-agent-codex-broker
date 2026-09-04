@@ -31,7 +31,12 @@ def is_official_codex_base_url(base_url: str) -> bool:
         return False
 
 
-def codex_cloudflare_headers(access_token: str, *, base_url: str = CODEX_AUX_BASE_URL) -> Dict[str, str]:
+def codex_cloudflare_headers(
+    access_token: str,
+    *,
+    base_url: str = CODEX_AUX_BASE_URL,
+    account_id: str | None = None,
+) -> Dict[str, str]:
     """Identity and account headers for chatgpt.com/backend-api/codex.
 
     OpenAI requires third-party harnesses to identify themselves: the official
@@ -46,19 +51,19 @@ def codex_cloudflare_headers(access_token: str, *, base_url: str = CODEX_AUX_BAS
         headers = {"User-Agent": f"HermesAgent/{__version__}", "originator": "hermes-agent"}
     else:
         headers = {"User-Agent": "codex_cli_rs/0.0.0 (Hermes Agent)", "originator": "codex_cli_rs"}
-    if not isinstance(access_token, str) or not access_token.strip():
-        return headers
-    try:
-        parts = access_token.split(".")
-        if len(parts) < 2:
-            return headers
-        payload_b64 = parts[1] + "=" * (-len(parts[1]) % 4)
-        claims = json.loads(base64.urlsafe_b64decode(payload_b64))
-        acct_id = claims.get("https://api.openai.com/auth", {}).get("chatgpt_account_id")
-        if isinstance(acct_id, str) and acct_id:
-            headers["ChatGPT-Account-ID"] = acct_id
-    except Exception:
-        pass
+    if isinstance(access_token, str) and access_token.strip():
+        try:
+            parts = access_token.split(".")
+            if len(parts) >= 2:
+                payload_b64 = parts[1] + "=" * (-len(parts[1]) % 4)
+                claims = json.loads(base64.urlsafe_b64decode(payload_b64))
+                acct_id = claims.get("https://api.openai.com/auth", {}).get("chatgpt_account_id")
+                if isinstance(acct_id, str) and acct_id:
+                    headers["ChatGPT-Account-ID"] = acct_id
+        except Exception:
+            pass
+    if account_id:
+        headers["ChatGPT-Account-ID"] = account_id
     return headers
 
 

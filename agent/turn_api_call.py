@@ -75,8 +75,12 @@ def perform_api_call(
 
     def _stop_spinner():
         nonlocal thinking_spinner
+        if getattr(agent, "_codex_broker", None) is not None:
+            agent._codex_broker_output_started = True
         thinking_spinner = stop_thinking_spinner(agent, thinking_spinner)
 
+    if getattr(agent, "_codex_broker", None) is not None:
+        agent._codex_broker_output_started = False
     _use_streaming = _should_stream(agent)
 
     def _perform_api_call(next_api_kwargs):

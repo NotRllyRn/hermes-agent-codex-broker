@@ -800,6 +800,24 @@ def _openrouter_fallback(requested_provider, explicit_api_key, explicit_base_url
                                             explicit_base_url=explicit_base_url), requested_provider)
 
 
+def _codex_broker_runtime(provider: str, requested_provider: str) -> Optional[Dict[str, Any]]:
+    """Fail-closed broker bootstrap without reading native Codex credentials."""
+    if provider != "openai-codex":
+        return None
+    from agent.codex_broker import CodexBrokerLeaseManager
+
+    if CodexBrokerLeaseManager.from_environment() is None:
+        return None
+    return _runtime(
+        "openai-codex",
+        "codex_responses",
+        DEFAULT_CODEX_BASE_URL,
+        "broker-managed",
+        source="codex-broker",
+        requested_provider=requested_provider,
+    )
+
+
 def _opencode_free_runtime(provider, requested_provider, model_cfg, target_model) -> Optional[Dict[str, Any]]:
     """OpenCode Zen free tier (*-free slugs) is served ANONYMOUSLY on the Zen relay only: unknown
     bearers 401 and the Go relay rejects free models, so free slugs route through the keyless Zen
@@ -845,6 +863,7 @@ def _ladder_rungs(requested_provider, explicit_api_key, explicit_base_url, targe
     provider = resolve_provider(requested_provider, explicit_api_key=explicit_api_key, explicit_base_url=explicit_base_url)
     model_cfg = _get_model_config()
     yield _opencode_free_runtime(provider, requested_provider, model_cfg, target_model)
+    yield _codex_broker_runtime(provider, requested_provider)
     yield _resolve_explicit_runtime(provider=provider, requested_provider=requested_provider, model_cfg=model_cfg,
                                     explicit_api_key=explicit_api_key, explicit_base_url=explicit_base_url,
                                     target_model=target_model)

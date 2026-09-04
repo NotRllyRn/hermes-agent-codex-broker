@@ -125,6 +125,51 @@ def handle_api_error(
         reason=classified.reason.value,
     )
 
+    broker = getattr(agent, "_codex_broker", None)
+    if broker is not None:
+        from agent.codex_broker import CodexBrokerError
+
+        def broker_failure(message: str) -> ApiErrorVerdict:
+            return _verdict("return", {
+                "final_response": message,
+                "messages": messages,
+                "api_calls": api_call_count,
+                "completed": False,
+                "failed": True,
+                "error": message,
+                "failure_reason": "codex_broker",
+                "failure_retryable": False,
+            })
+
+        if isinstance(api_error, CodexBrokerError):
+            return broker_failure(str(api_error))
+        if bool(getattr(agent, "_codex_broker_output_started", False)):
+            return broker_failure("Codex request failed after output started; automatic replay was blocked")
+        failure_kind = (
+            "auth"
+            if status_code in {401, 403}
+            else "quota"
+            if status_code == 429 or classified.reason in {FailoverReason.billing, FailoverReason.rate_limit}
+            else None
+        )
+        if failure_kind is not None:
+            try:
+                lease = broker.replace_failed_lease(
+                    str(agent.session_id or ""),
+                    str(turn_id),
+                    failure_kind,
+                    interrupted=lambda: bool(agent._interrupt_requested),
+                )
+                if lease is not None:
+                    broker.apply_to_agent(agent, lease)
+            except InterruptedError:
+                return broker_failure("Interrupted while waiting for Codex Broker")
+            except CodexBrokerError as exc:
+                return broker_failure(str(exc))
+            if lease is None:
+                return broker_failure("Codex Broker replacement already attempted for this turn")
+            return _verdict("continue")
+
     _recovered, recovered_with_pool = recover_after_classification(
         agent, api_error, classified, _retry, status_code=status_code, error_context=error_context,
         messages=messages, api_messages=api_messages,

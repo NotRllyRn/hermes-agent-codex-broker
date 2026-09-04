@@ -310,6 +310,7 @@ def _refresh_credentials_after_401(
     if (
         agent.api_mode == "codex_responses"
         and agent.provider in {"openai-codex", "xai-oauth"}
+        and getattr(agent, "_codex_broker", None) is None
         and not _retry.codex_auth_retry_attempted
     ):
         _retry.codex_auth_retry_attempted = True

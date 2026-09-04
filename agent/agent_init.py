@@ -2252,6 +2252,18 @@ def init_agent(
     agent.acp_command = acp_command or command
     agent.acp_args = list(acp_args or args or [])
     _resolve_api_mode(agent, api_mode, provider_name, base_url)
+
+    from agent.codex_broker import CodexBrokerLeaseManager
+
+    agent._codex_broker = CodexBrokerLeaseManager.from_environment()
+    if agent._codex_broker is not None:
+        if agent.provider != "openai-codex" or agent.api_mode != "codex_responses":
+            raise RuntimeError("Codex Broker requires the openai-codex provider in codex_responses mode")
+        from agent.codex_headers import CODEX_AUX_BASE_URL
+
+        credential_pool = agent._credential_pool = None
+        api_key, base_url = "broker-managed", CODEX_AUX_BASE_URL
+        agent.base_url = base_url
     _finalize_routing(agent, api_mode, credential_pool)
 
     # Platform callbacks are stored under their parameter names verbatim.

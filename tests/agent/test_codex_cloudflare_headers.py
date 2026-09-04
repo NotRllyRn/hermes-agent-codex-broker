@@ -75,6 +75,14 @@ class TestCodexCloudflareHeaders:
 
 
 
+    def test_explicit_broker_account_id_overrides_jwt(self):
+        from agent.codex_headers import codex_cloudflare_headers
+
+        headers = codex_cloudflare_headers(
+            _make_codex_jwt("jwt-account"), account_id="broker-account"
+        )
+        assert headers["ChatGPT-Account-ID"] == "broker-account"
+
     def test_jwt_without_chatgpt_account_id_claim(self):
         """A valid JWT that lacks the account_id claim should still return headers."""
         from agent.auxiliary_client import _codex_cloudflare_headers
