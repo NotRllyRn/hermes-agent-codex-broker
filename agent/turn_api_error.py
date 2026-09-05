@@ -17,6 +17,7 @@ from typing import Any, Dict, Optional
 
 from agent.api_error_summary import is_provider_stream_parse_error
 from agent.error_classifier import RETRYABLE_CLIENT_REASONS, FailoverReason, classify_api_error
+from agent.message_metadata import append_message
 from agent.turn_overflow import recover_from_overflow
 from agent.turn_recovery import (
     _NONRETRYABLE_LABELS, abort_turn_on_interrupt, compute_error_backoff, free_tier_cooldown_ends_turn,
@@ -26,6 +27,21 @@ from agent.turn_recovery import (
 )
 
 logger = logging.getLogger("agent.conversation_loop")
+
+
+def _prepare_broker_continuation(agent: Any, messages: Any, api_messages: Any) -> None:
+    partial = agent._strip_think_blocks(
+        getattr(agent, "_current_streamed_assistant_text", "") or ""
+    ).strip()
+    if not partial:
+        return
+    append_message(messages, {"role": "assistant", "content": partial})
+    if api_messages is not messages:
+        append_message(api_messages, {"role": "assistant", "content": partial})
+    append_message(api_messages, {
+        "role": "user",
+        "content": "Continue exactly where the interrupted response stopped without repeating prior output.",
+    })
 
 
 @dataclass
@@ -147,8 +163,6 @@ def handle_api_error(
 
         if isinstance(api_error, CodexBrokerError):
             return broker_failure(str(api_error))
-        if bool(getattr(agent, "_codex_broker_output_started", False)):
-            return broker_failure("Codex request failed after output started; automatic replay was blocked")
         failure_kind = (
             "auth"
             if status_code in {401, 403}
@@ -156,7 +170,12 @@ def handle_api_error(
             if status_code == 429 or classified.reason in {FailoverReason.billing, FailoverReason.rate_limit}
             else None
         )
+        output_started = bool(getattr(agent, "_codex_broker_output_started", False))
+        if output_started and failure_kind is None:
+            return broker_failure("Codex request failed after output started; automatic replay was blocked")
         if failure_kind is not None:
+            if output_started:
+                _prepare_broker_continuation(agent, messages, api_messages)
             try:
                 lease = broker.replace_failed_lease(
                     str(agent.session_id or ""),
