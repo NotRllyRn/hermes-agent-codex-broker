@@ -6,6 +6,7 @@ from typing import Any
 import pytest
 
 from agent.codex_broker import CodexBrokerError, CodexBrokerLeaseManager, Lease
+from agent.turn_api_error import _prepare_broker_continuation
 
 
 class Response:
@@ -144,6 +145,23 @@ def test_replacement_walks_unique_accounts(monkeypatch: pytest.MonkeyPatch) -> N
     status = manager.status_for_session("s")
     assert status and status.account_label == "Primary"
     assert "5h 80%" in manager.format_status(status)
+
+
+def test_post_output_failover_preserves_partial_and_requests_continuation() -> None:
+    messages: list[dict[str, object]] = []
+    api_messages: list[dict[str, object]] = []
+    agent = SimpleNamespace(
+        _current_streamed_assistant_text="partial answer",
+        _strip_think_blocks=lambda value: value,
+    )
+
+    _prepare_broker_continuation(agent, messages, api_messages)
+
+    assert messages[0]["role"] == "assistant"
+    assert messages[0]["content"] == "partial answer"
+    assert api_messages[0]["content"] == messages[0]["content"]
+    assert api_messages[1]["role"] == "user"
+    assert "without repeating" in str(api_messages[1]["content"])
 
 
 def test_apply_and_clear_agent_use_explicit_account_identity() -> None:
