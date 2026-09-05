@@ -27,8 +27,9 @@ async def test_broker_status_uses_cached_session_route() -> None:
     broker.format_status.return_value = "Primary · 5h 80% · week 60%"
     runner._agent_cache["session-key"] = (SimpleNamespace(_codex_broker=broker), "signature")
 
-    event: Any = SimpleNamespace(source=SimpleNamespace())
+    event: Any = SimpleNamespace(source=SimpleNamespace(), get_command_args=lambda: "")
     result = await runner._handle_broker_status_command(event)
 
-    assert result == "Codex Broker account: Primary · 5h 80% · week 60%"
+    assert "Status: Primary · 5h 80% · week 60%" in result
+    assert "/broker-status set" in result
     broker.status_for_session.assert_called_once_with("session-id")
