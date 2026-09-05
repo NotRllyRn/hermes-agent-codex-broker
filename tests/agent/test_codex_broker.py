@@ -55,6 +55,12 @@ def test_environment_is_disabled_or_fails_closed(monkeypatch: pytest.MonkeyPatch
 
 
 def test_configuration_is_verified_and_persisted(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    for name in (
+        "HERMES_CODEX_BROKER_URL",
+        "HERMES_CODEX_BROKER_CLIENT_KEY",
+        "HERMES_CODEX_BROKER_CA_CERT",
+    ):
+        monkeypatch.setenv(name, "")
     ca = tmp_path / "ca.crt"
     ca.write_text("test")
     env_file = tmp_path / ".env"
