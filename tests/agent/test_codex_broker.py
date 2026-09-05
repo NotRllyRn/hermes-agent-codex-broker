@@ -2,11 +2,12 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import MagicMock
 
 import pytest
 
 from agent.codex_broker import CodexBrokerError, CodexBrokerLeaseManager, Lease
-from agent.turn_api_error import _prepare_broker_continuation
+from agent.turn_api_error import _prepare_broker_continuation, handle_api_error
 
 
 class Response:
@@ -162,6 +163,57 @@ def test_post_output_failover_preserves_partial_and_requests_continuation() -> N
     assert api_messages[0]["content"] == messages[0]["content"]
     assert api_messages[1]["role"] == "user"
     assert "without repeating" in str(api_messages[1]["content"])
+
+
+def test_usage_limit_after_output_selects_next_account(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    broker = MagicMock()
+    broker.replace_failed_lease.return_value = Lease(
+        "replacement", "Backup", "secret", "upstream", "2099-01-01T00:00:00Z",
+        80, 60, None, None,
+    )
+    broker.status_for_session.return_value = None
+    agent = SimpleNamespace(
+        _codex_broker=broker,
+        _codex_broker_output_started=True,
+        _current_streamed_assistant_text="partial answer",
+        _strip_think_blocks=lambda value: value,
+        _extract_api_error_context=lambda _error: {},
+        _invoke_api_request_error_hook=lambda **_kwargs: None,
+        _interrupt_requested=False,
+        thinking_callback=None,
+        context_compressor=None,
+        provider="openai-codex",
+        model="gpt-5.4",
+        session_id="session",
+        log_prefix="",
+        _emit_status=lambda _status: None,
+    )
+    monkeypatch.setattr(
+        "agent.turn_api_error.recover_before_classification",
+        lambda *_args, **_kwargs: (False, None),
+    )
+    error = RuntimeError("you've hit your usage limit")
+    error.status_code = 429  # type: ignore[attr-defined]
+    messages: list[dict[str, object]] = []
+    api_messages: list[dict[str, object]] = []
+
+    verdict = handle_api_error(
+        agent, api_error=error, _retry=SimpleNamespace(), thinking_spinner=None,
+        messages=messages, api_messages=api_messages, api_kwargs={}, system_message=None,
+        active_system_prompt=None, conversation_history=[], approx_tokens=0, retry_count=0,
+        max_retries=3, compression_attempts=0, max_compression_attempts=3,
+        api_call_count=1, api_request_id="request", api_start_time=0,
+        effective_task_id="task", turn_id="turn",
+    )
+
+    assert verdict.action == "continue"
+    broker.replace_failed_lease.assert_called_once()
+    assert broker.replace_failed_lease.call_args.args[2] == "quota"
+    broker.apply_to_agent.assert_called_once()
+    assert messages[0]["content"] == "partial answer"
+    assert "without repeating" in str(api_messages[-1]["content"])
 
 
 def test_apply_and_clear_agent_use_explicit_account_identity() -> None:
