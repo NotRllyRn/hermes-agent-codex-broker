@@ -279,16 +279,92 @@ class GatewayStatusCommandsMixin:
         return "\n".join(lines)
 
     async def _handle_broker_status_command(self, event: MessageEvent) -> str:
-        """Show the last broker route selected for this session."""
+        """Show or update persistent Codex Broker settings."""
+        import shlex
+        from pathlib import Path
+
+        from agent.codex_broker import (
+            CodexBrokerError,
+            CodexBrokerLeaseManager,
+            broker_configuration,
+            save_broker_configuration,
+        )
+
         session = await self.async_session_store.get_or_create_session(event.source)
         agent = self._resident_agent_for(session.session_key)
         broker = getattr(agent, "_codex_broker", None)
-        status = broker.status_for_session(session.session_id) if broker is not None else None
-        return (
-            f"Codex Broker account: {broker.format_status(status)}"
-            if broker is not None and status is not None
-            else "Codex Broker has no active route for this session"
+        args = shlex.split(event.get_command_args())
+        if args:
+            from gateway.slash_access import policy_for_source
+
+            policy = policy_for_source(self.config, event.source)
+            if policy.enabled and not policy.is_admin(event.source.user_id):
+                return "Only a gateway administrator can change Codex Broker settings."
+            if self._running_agents:
+                return "Wait for active agent turns to finish before changing Codex Broker settings."
+            values: dict[str, str] = broker_configuration()
+            if args[0] == "set" and len(args) == 4:
+                values = dict(zip(("url", "token", "ca"), args[1:]))
+            elif args[0] in values and len(args) == 2:
+                values[args[0]] = args[1]
+            else:
+                return self._broker_settings_help(values, broker, session.session_id)
+            values["ca"] = str(Path(values["ca"]).expanduser().resolve())
+            try:
+                save_broker_configuration(
+                    values,
+                    Path(os.environ.get("HERMES_HOME", "~/.hermes")).expanduser() / ".env",
+                )
+                replacement = CodexBrokerLeaseManager.from_environment()
+                self._replace_resident_brokers(replacement)
+            except (CodexBrokerError, OSError) as exc:
+                return f"Codex Broker settings were not saved: {exc}"
+            return "Codex Broker settings saved and connection verified.\n" + self._broker_settings_help(
+                values, replacement, session.session_id, connected=True
+            )
+        connected = False
+        try:
+            broker = broker or CodexBrokerLeaseManager.from_environment()
+            if broker is not None:
+                await asyncio.to_thread(broker.health)
+                connected = True
+        except CodexBrokerError:
+            pass
+        return self._broker_settings_help(
+            broker_configuration(), broker, session.session_id, connected=connected
         )
+
+    @staticmethod
+    def _broker_settings_help(values, broker, session_id: str, *, connected: bool | None = None) -> str:
+        status = broker.status_for_session(session_id) if broker is not None else None
+        route = (
+            broker.format_status(status)
+            if broker is not None and status is not None
+            else "server ready" if connected else "server unavailable"
+        )
+        return (
+            "**Codex Broker settings**\n"
+            f"Server: `{values['url'] or 'not set'}`\n"
+            f"API token: `{'configured' if values['token'] else 'not set'}`\n"
+            f"CA certificate: `{values['ca'] or 'not set'}`\n"
+            f"Status: {route}\n\n"
+            "Set all: `/broker-status set <https-url> <api-token> <ca-path>`\n"
+            "Set one: `/broker-status url|token|ca <value>`"
+        )
+
+    def _replace_resident_brokers(self, broker) -> None:
+        agents = list(getattr(self, "_running_agents", {}).values())
+        cache = getattr(self, "_agent_cache", {})
+        lock = getattr(self, "_agent_cache_lock", None)
+        if lock:
+            with lock:
+                entries = list(cache.values())
+        else:
+            entries = list(cache.values())
+        agents.extend(entry[0] if isinstance(entry, (tuple, list)) else entry for entry in entries)
+        for agent in agents:
+            if hasattr(agent, "_codex_broker"):
+                agent._codex_broker = broker
 
     async def _status_session_db_facts(self, session_id: str):
         """``(title, session_row, db_total_tokens, persisted_route)`` for /status; each fail-open.
