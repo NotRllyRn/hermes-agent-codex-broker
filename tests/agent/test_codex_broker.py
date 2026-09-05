@@ -6,7 +6,13 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from agent.codex_broker import CodexBrokerError, CodexBrokerLeaseManager, Lease
+from agent.codex_broker import (
+    CodexBrokerError,
+    CodexBrokerLeaseManager,
+    Lease,
+    broker_configuration,
+    save_broker_configuration,
+)
 from agent.turn_api_error import _prepare_broker_continuation, handle_api_error
 
 
@@ -46,6 +52,24 @@ def test_environment_is_disabled_or_fails_closed(monkeypatch: pytest.MonkeyPatch
     monkeypatch.setenv("HERMES_CODEX_BROKER_CLIENT_KEY", "cbk_test")
     with pytest.raises(CodexBrokerError, match="HTTPS"):
         CodexBrokerLeaseManager.from_environment()
+
+
+def test_configuration_is_verified_and_persisted(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    ca = tmp_path / "ca.crt"
+    ca.write_text("test")
+    env_file = tmp_path / ".env"
+    env_file.write_text("EXISTING=yes\nHERMES_CODEX_BROKER_URL=old\n")
+    monkeypatch.setattr("agent.codex_broker.httpx.get", lambda *_a, **_k: Response(200, {}))
+
+    values = {"url": "https://broker.test", "token": "cbk_test", "ca": str(ca)}
+    save_broker_configuration(values, env_file)
+
+    assert broker_configuration() == values
+    assert env_file.stat().st_mode & 0o777 == 0o600
+    text = env_file.read_text()
+    assert "EXISTING=yes" in text
+    assert text.count("HERMES_CODEX_BROKER_URL=") == 1
+    assert 'HERMES_CODEX_BROKER_CLIENT_KEY="cbk_test"' in text
 
 
 def test_lease_is_cached_per_turn_and_preferred_next_turn(

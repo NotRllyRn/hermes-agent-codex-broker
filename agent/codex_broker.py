@@ -4,9 +4,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import json
 import math
 import os
 from pathlib import Path
+import tempfile
 import threading
 import time
 from typing import Any, Callable
@@ -63,6 +65,49 @@ def codex_broker_environment_present() -> bool:
     )
 
 
+_BROKER_ENV = {
+    "url": "HERMES_CODEX_BROKER_URL",
+    "token": "HERMES_CODEX_BROKER_CLIENT_KEY",
+    "ca": "HERMES_CODEX_BROKER_CA_CERT",
+}
+
+
+def broker_configuration() -> dict[str, str]:
+    return {field: os.environ.get(name, "").strip() for field, name in _BROKER_ENV.items()}
+
+
+def save_broker_configuration(values: dict[str, str], env_file: Path) -> None:
+    """Persist complete broker settings in the Hermes environment file."""
+    if set(values) != set(_BROKER_ENV) or any(not value.strip() or "\n" in value for value in values.values()):
+        raise CodexBrokerError("URL, client key, and CA certificate must all be configured")
+    manager = CodexBrokerLeaseManager(values["url"].strip(), values["token"].strip(), values["ca"].strip())
+    manager.health()
+    existing = env_file.read_text(encoding="utf-8") if env_file.exists() else ""
+    replacements = {name: json.dumps(values[field].strip()) for field, name in _BROKER_ENV.items()}
+    lines: list[str] = []
+    seen: set[str] = set()
+    for line in existing.splitlines():
+        name = line.split("=", 1)[0].strip()
+        if name in replacements:
+            lines.append(f"{name}={replacements[name]}")
+            seen.add(name)
+        else:
+            lines.append(line)
+    lines.extend(f"{name}={value}" for name, value in replacements.items() if name not in seen)
+    env_file.parent.mkdir(parents=True, exist_ok=True)
+    temporary = ""
+    try:
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=env_file.parent, delete=False) as handle:
+            temporary = handle.name
+            handle.write("\n".join(lines).rstrip() + "\n")
+        Path(temporary).chmod(0o600)
+        os.replace(temporary, env_file)
+    finally:
+        if temporary:
+            Path(temporary).unlink(missing_ok=True)
+    os.environ.update({_BROKER_ENV[field]: value.strip() for field, value in values.items()})
+
+
 def _reset_in(value: str) -> str:
     minutes = max(
         0,
@@ -87,6 +132,7 @@ class CodexBrokerLeaseManager:
             raise CodexBrokerError("Codex Broker URL must not contain a query or fragment")
         if ca_cert and not Path(ca_cert).is_file():
             raise CodexBrokerError("Codex Broker CA certificate is unavailable")
+        self._health_url = f"{url.rstrip('/')}/api/v1/health"
         self._route_url = f"{url.rstrip('/')}/api/v1/route"
         self._client_key = client_key
         self._verify: bool | str = ca_cert or True
@@ -106,6 +152,19 @@ class CodexBrokerLeaseManager:
         if not url or not key:
             raise CodexBrokerError("Codex Broker URL and client key must both be configured")
         return cls(url, key, ca_cert)
+
+    def health(self) -> None:
+        try:
+            response = httpx.get(
+                self._health_url,
+                headers={"Authorization": f"Bearer {self._client_key}"},
+                timeout=httpx.Timeout(10.0, connect=5.0),
+                verify=self._verify,
+            )
+        except (httpx.HTTPError, OSError) as exc:
+            raise CodexBrokerError("Codex Broker unavailable") from exc
+        if response.status_code != 200:
+            raise CodexBrokerError("Codex Broker client key rejected" if response.status_code == 401 else "Codex Broker unavailable")
 
     def lease_for_turn(
         self, session_id: str, turn_id: str, *, interrupted: InterruptCheck
