@@ -1,15 +1,13 @@
+import asyncio
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
-
-import pytest
 
 from agent.codex_broker import BrokerStatus, CodexBrokerLeaseManager
 from gateway.run import GatewayRunner
 
 
-@pytest.mark.asyncio
-async def test_broker_status_uses_cached_session_route() -> None:
+def test_broker_status_uses_cached_session_route() -> None:
     runner: Any = object.__new__(GatewayRunner)
     runner._running_agents = {}
     runner._agent_cache = {}
@@ -28,7 +26,7 @@ async def test_broker_status_uses_cached_session_route() -> None:
     runner._agent_cache["session-key"] = (SimpleNamespace(_codex_broker=broker), "signature")
 
     event: Any = SimpleNamespace(source=SimpleNamespace(), get_command_args=lambda: "")
-    result = await runner._handle_broker_status_command(event)
+    result = asyncio.run(runner._handle_broker_status_command(event))
 
     assert "Status: Primary · 5h 80% · week 60%" in result
     assert "/broker-status set" in result
