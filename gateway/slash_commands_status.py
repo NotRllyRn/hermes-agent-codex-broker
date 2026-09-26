@@ -349,7 +349,9 @@ class GatewayStatusCommandsMixin:
             from gateway.slash_access import policy_for_source
 
             policy = policy_for_source(self.config, event.source)
-            if policy.enabled and not policy.is_admin(event.source.user_id):
+            if not policy.enabled:
+                return "Configure a gateway administrator before changing Codex Broker settings."
+            if not policy.is_admin(event.source.user_id):
                 return "Only a gateway administrator can change Codex Broker settings."
             if self._running_agents:
                 return "Wait for active agent turns to finish before changing Codex Broker settings."

@@ -28,13 +28,20 @@ from agent.turn_recovery import (
 logger = logging.getLogger("agent.conversation_loop")
 
 
-def _prepare_broker_continuation(agent: Any, messages: Any, api_messages: Any) -> None:
+def _record_broker_partial(agent: Any, messages: Any) -> str:
     partial = agent._strip_think_blocks(
         getattr(agent, "_current_streamed_assistant_text", "") or ""
     ).strip()
     if not partial:
-        return
+        return ""
     append_message(messages, {"role": "assistant", "content": partial})
+    return partial
+
+
+def _prepare_broker_continuation(agent: Any, messages: Any, api_messages: Any) -> None:
+    partial = _record_broker_partial(agent, messages)
+    if not partial:
+        return
     if api_messages is not messages:
         append_message(api_messages, {"role": "assistant", "content": partial})
     append_message(api_messages, {
@@ -170,6 +177,7 @@ def handle_api_error(
         )
         output_started = bool(getattr(agent, "_codex_broker_output_started", False))
         if output_started and failure_kind is None:
+            _record_broker_partial(agent, messages)
             return broker_failure("Codex request failed after output started; automatic replay was blocked")
         if failure_kind is not None:
             if output_started:
@@ -189,7 +197,14 @@ def handle_api_error(
                             f"Codex Broker account: {broker.format_status(status)}"
                         )
             except InterruptedError:
-                return broker_failure("Interrupted while waiting for Codex Broker")
+                if agent.clear_interrupt(preserve_redirect=True):
+                    _retry.restart_with_redirected_messages = True
+                    return _verdict("break")
+                return _verdict("return", abort_turn_on_interrupt(
+                    agent, messages, conversation_history, api_call_count,
+                    abort_message="Interrupt detected while waiting for Codex Broker.",
+                    interrupt_text="Operation interrupted while waiting for Codex Broker.",
+                ))
             except CodexBrokerError as exc:
                 return broker_failure(str(exc))
             if lease is None:
