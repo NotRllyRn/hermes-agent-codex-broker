@@ -259,6 +259,7 @@ def test_apply_and_clear_agent_use_explicit_account_identity() -> None:
                 "authorization": "forbidden",
                 "chatgpt-account-id": "wrong",
                 "user-agent": "wrong",
+                "x-openai-internal-codex-residency": "stale-region",
             },
         },
         _replace_primary_openai_client=lambda *, reason: reasons.append(reason) or True,
@@ -280,13 +281,95 @@ def test_apply_and_clear_agent_use_explicit_account_identity() -> None:
     )
     assert agent.api_key == "secret"
     assert agent._client_kwargs["default_headers"]["ChatGPT-Account-ID"] == "upstream"
-    assert not {"authorization", "chatgpt-account-id", "user-agent"} & set(
+    assert not {
+        "authorization", "chatgpt-account-id", "user-agent",
+        "x-openai-internal-codex-residency",
+    } & set(
         agent._client_kwargs["default_headers"]
     )
     manager.clear_agent(agent)
     assert agent.api_key == "broker-managed"
     assert "secret" not in repr(agent._client_kwargs)
     assert reasons == ["codex_broker_lease", "codex_broker_turn_cleanup"]
+
+
+def test_nonreplayable_failure_preserves_partial_output(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    broker = MagicMock()
+    broker.classify_failure.return_value = None
+    agent = SimpleNamespace(
+        _codex_broker=broker,
+        _codex_broker_output_started=True,
+        _current_streamed_assistant_text="partial answer",
+        _strip_think_blocks=lambda value: value,
+        _extract_api_error_context=lambda _error: {},
+        _invoke_api_request_error_hook=lambda **_kwargs: None,
+        _interrupt_requested=False,
+        thinking_callback=None,
+        context_compressor=None,
+        provider="openai-codex",
+        model="gpt-5.4",
+        session_id="session",
+        log_prefix="",
+        _emit_status=lambda _status: None,
+    )
+    monkeypatch.setattr(
+        "agent.turn_api_error.recover_before_classification",
+        lambda *_args, **_kwargs: (False, None),
+    )
+    messages: list[dict[str, object]] = []
+    verdict = handle_api_error(
+        agent, api_error=RuntimeError("generic failure"), _retry=SimpleNamespace(),
+        thinking_spinner=None, messages=messages, api_messages=[], api_kwargs={},
+        system_message=None, active_system_prompt=None, conversation_history=[],
+        approx_tokens=0, retry_count=0, max_retries=3, compression_attempts=0,
+        max_compression_attempts=3, api_call_count=1, api_request_id="request",
+        api_start_time=0, effective_task_id="task", turn_id="turn",
+    )
+
+    assert verdict.action == "return"
+    assert messages[0]["role"] == "assistant"
+    assert messages[0]["content"] == "partial answer"
+
+
+def test_broker_wait_interrupt_uses_normal_abort_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    broker = MagicMock()
+    broker.classify_failure.return_value = "quota"
+    broker.replace_failed_lease.side_effect = InterruptedError
+    retry = SimpleNamespace()
+    clear_interrupt = MagicMock(return_value=False)
+    agent = SimpleNamespace(
+        _codex_broker=broker, _codex_broker_output_started=False,
+        _extract_api_error_context=lambda _error: {},
+        _invoke_api_request_error_hook=lambda **_kwargs: None,
+        _interrupt_requested=True, clear_interrupt=clear_interrupt,
+        thinking_callback=None, context_compressor=None, provider="openai-codex",
+        model="gpt-5.4", session_id="session", log_prefix="",
+        _emit_status=lambda _status: None,
+    )
+    monkeypatch.setattr(
+        "agent.turn_api_error.recover_before_classification",
+        lambda *_args, **_kwargs: (False, None),
+    )
+    abort = MagicMock(return_value="aborted")
+    monkeypatch.setattr("agent.turn_api_error.abort_turn_on_interrupt", abort)
+
+    verdict = handle_api_error(
+        agent, api_error=RuntimeError("usage limit"), _retry=retry,
+        thinking_spinner=None, messages=[], api_messages=[], api_kwargs={},
+        system_message=None, active_system_prompt=None, conversation_history=[],
+        approx_tokens=0, retry_count=0, max_retries=3, compression_attempts=0,
+        max_compression_attempts=3, api_call_count=1, api_request_id="request",
+        api_start_time=0, effective_task_id="task", turn_id="turn",
+    )
+
+    assert verdict.action == "return"
+    assert verdict.result == "aborted"
+    clear_interrupt.assert_called_once_with(preserve_redirect=True)
+    abort.assert_called_once()
 
 
 def test_invalid_payload_and_rejected_key_are_safe(monkeypatch: pytest.MonkeyPatch) -> None:

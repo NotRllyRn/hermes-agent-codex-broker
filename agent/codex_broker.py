@@ -237,7 +237,10 @@ class CodexBrokerLeaseManager:
         """Remove turn credentials from the long-lived agent and client."""
         from agent.codex_headers import codex_cloudflare_headers
 
-        blocked = {"authorization", "chatgpt-account-id", "user-agent", "originator"}
+        blocked = {
+            "authorization", "chatgpt-account-id", "user-agent", "originator",
+            "x-openai-internal-codex-residency",
+        }
         existing = dict(agent._client_kwargs.get("default_headers") or {})
         kwargs = dict(agent._client_kwargs)
         kwargs["api_key"] = "broker-managed"
@@ -259,7 +262,10 @@ class CodexBrokerLeaseManager:
             base_url=str(agent.base_url or ""),
             account_id=lease.chatgpt_account_id,
         )
-        blocked = {"authorization", "chatgpt-account-id", "user-agent", "originator"}
+        blocked = {
+            "authorization", "chatgpt-account-id", "user-agent", "originator",
+            "x-openai-internal-codex-residency",
+        }
         existing = dict(agent._client_kwargs.get("default_headers") or {})
         kwargs = dict(agent._client_kwargs)
         kwargs["api_key"] = lease.access_token
