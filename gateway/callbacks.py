@@ -64,6 +64,8 @@ class GatewayCallbacksMixin:
         return ledger
 
     async def _validate_callback(self, event):
+        if getattr(getattr(self, 'config', None), 'multiplex_profiles', False):
+            raise ValueError('durable callbacks do not yet support multiplex profiles')
         if not isinstance(event, MessageEvent) or event.internal is not True or event.allow_gateway_control is not False:
             raise ValueError('callback requires internal=True, allow_gateway_control=False')
         allowed = {'gateway_session_key', 'gateway_session_id', 'gateway_session_strict', 'notification_category'}

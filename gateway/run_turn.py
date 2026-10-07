@@ -453,7 +453,7 @@ class GatewayTurnMixin:
                 return
             session_entry = resolved_entry
         self._cache_session_source(session_key, source)
-        if await asyncio.to_thread(self._is_telegram_topic_lane, source):
+        if not strict_session and await asyncio.to_thread(self._is_telegram_topic_lane, source):
             session_entry = await self._hmwa_heal_telegram_topic_binding(source, session_entry, session_key)
         from gateway.run_heartbeat_acceptance import resolve_heartbeat_owner
         if not await resolve_heartbeat_owner(self, event, session_entry):
@@ -2182,10 +2182,15 @@ class GatewayTurnMixin:
             if not heartbeat_owner_is_current(self, event, session_key):
                 return
             _run_start_session_id = session_entry.session_id
+            if event.metadata.get('gateway_session_strict'):
+                current = await self.async_session_store.lookup_by_session_key(session_key)
+                if current is None or current.session_id != event.metadata.get('gateway_session_id') or _run_start_session_id != current.session_id:
+                    return
             _turn_started_monotonic = time.monotonic()
             # Admission/typing is not execution. All routing, authorization and
             # turn preparation gates have passed when the agent runner is entered.
             event._heartbeat_execution_started = True
+
             # Internal events reuse the last human turn's channel inputs (see _pinned_channel_inputs).
             _turn_channel_prompt, _turn_source = self._pinned_channel_inputs(
                 session_key, event.channel_prompt, source, internal=event.internal,
@@ -2194,6 +2199,10 @@ class GatewayTurnMixin:
                 # Persist the coherent context+channel pair before execution: a crash during the
                 # human turn may be followed by an internal startup-resume on the next process.
                 await self._persist_prompt_pins(session_key, _run_start_session_id)
+
+            if getattr(event, '_callback_id', None) is not None:
+                event._callback_execution_started = True
+
             agent_result = await self._run_agent(
                 message=message_text, context_prompt=prepared.context_prompt, history=history, source=_turn_source,
                 session_id=_run_start_session_id, session_key=session_key,
@@ -2211,8 +2220,6 @@ class GatewayTurnMixin:
                 message_type=event.message_type,
                 scheduled_heartbeat=bool(getattr(event, "_heartbeat_session_id", None)),
             )
-            if getattr(event, "_callback_id", None) is not None:
-                event._callback_processed = True
             _turn_seconds = time.monotonic() - _turn_started_monotonic
 
             # A queued (/queue) chain answered the LAST message of the chain, so the outer final
@@ -2262,10 +2269,13 @@ class GatewayTurnMixin:
                 hidden_reasoning_incomplete=hidden_reasoning_incomplete,
                 is_context_overflow_failure=is_context_overflow_failure,
             )
-            return await self._hmwa_deliver_turn_response(
+            delivered_response = await self._hmwa_deliver_turn_response(
                 event, source, session_entry, session_key, run_generation,
                 agent_result, agent_messages, response, _footer_line, _intentional_silence,
             )
+            if getattr(event, '_callback_id', None) is not None and not agent_failed_early:
+                event._callback_processed = True
+            return delivered_response
 
         except Exception as e:
             return await self._hmwa_agent_error_reply(e, event, source, session_entry, session_key, prepared)

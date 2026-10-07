@@ -33,6 +33,62 @@ def test_recover_only_queued(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_multiplex_admission_fails_before_durable_queue(tmp_path):
+    runner = Runner(tmp_path)
+    runner.config = SimpleNamespace(multiplex_profiles=True)
+    with pytest.raises(ValueError, match='multiplex'):
+        await runner.admit_callback('one', runner.event())
+    assert await runner.get_callback_receipt('one') is None
+
+
+@pytest.mark.asyncio
+async def test_swallowed_execution_failure_is_uncertain(tmp_path):
+    runner = Runner(tmp_path)
+    runner.active = False
+    async def failed(event):
+        event._callback_execution_started = True
+        return 'error reply'
+    runner._handle_message_inner = failed
+    await runner.admit_callback('one', runner.event())
+    await runner._callback_dispatcher
+    assert (await runner.get_callback_receipt('one'))['status'] == 'uncertain'
+
+
+@pytest.mark.asyncio
+async def test_adapter_cancel_before_entry_resolves_callback(tmp_path):
+    from gateway.platforms.base import BasePlatformAdapter
+    runner = Runner(tmp_path)
+    event = runner.event()
+    event._callback_done = asyncio.get_running_loop().create_future()
+    async def processing(event, key):
+        await asyncio.sleep(30)
+    owner = SimpleNamespace(_active_sessions={}, _session_tasks={}, _process_message_background=processing)
+    def track(key, task):
+        owner._session_tasks[key] = task
+        return True
+    owner._track_session_task = track
+    assert BasePlatformAdapter._start_session_processing(owner, event, 'key')
+    owner._session_tasks['key'].cancel()
+    await asyncio.gather(owner._session_tasks['key'], return_exceptions=True)
+    assert await asyncio.wait_for(event._callback_done, 1) == 'adapter_stopped'
+
+
+@pytest.mark.asyncio
+async def test_strict_route_never_heals_to_different_topic(tmp_path):
+    from gateway.run_turn import GatewayTurnMixin
+    from unittest.mock import patch
+    runner = Runner(tmp_path)
+    runner._cache_session_source = lambda *args: None
+    runner.entry.session_key = 'key'
+    runner._is_telegram_topic_lane = lambda source: True
+    runner._hmwa_heal_telegram_topic_binding = AsyncMock(side_effect=AssertionError('must not switch'))
+    with patch('gateway.run_heartbeat_acceptance.resolve_heartbeat_owner', AsyncMock(return_value=True)):
+        outcome = await GatewayTurnMixin._hmwa_resolve_session(runner, runner.event(), runner.source)
+    assert outcome[1].session_id == 'original'
+    runner._hmwa_heal_telegram_topic_binding.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_ready_hook_and_no_generic_resume_marker(tmp_path, monkeypatch):
     from hermes_cli import lifecycle
     hook = AsyncMock(return_value=[])

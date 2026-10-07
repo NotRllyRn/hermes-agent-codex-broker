@@ -1293,7 +1293,8 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
             ledger.set_status(callback_id, "running")
             status = "uncertain"
             result = await self._handle_message_inner(event)
-            status = "completed" if getattr(event, "_callback_processed", False) else "rejected"
+            status = ("completed" if getattr(event, "_callback_processed", False) else
+                      "uncertain" if getattr(event, "_callback_execution_started", False) else "rejected")
             return result
         finally:
             ledger.set_status(callback_id, status)

@@ -3958,6 +3958,14 @@ class BasePlatformAdapter(ABC):
             self._session_tasks.pop(session_key, None)
             self._release_session_guard(session_key, guard=guard)
             return False
+        done = getattr(event, '_callback_done', None)
+        if done is not None:
+            # Cancellation may precede even the processing coroutine's first line.
+            # The runner alone cannot signal that proven pre-entry termination.
+            def finish_callback(completed_task):
+                if not done.done():
+                    done.set_result('adapter_stopped')
+            task.add_done_callback(finish_callback)
         return True
 
     def _track_session_task(self, session_key: str, task: Any) -> bool:
