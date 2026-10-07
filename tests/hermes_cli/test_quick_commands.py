@@ -79,6 +79,7 @@ class TestGatewayQuickCommands:
 
     def _make_event(self, command, args=""):
         event = MagicMock()
+        event._callback_id = None
         event.get_command.return_value = command
         event.get_command_args.return_value = args
         event.text = f"/{command} {args}".strip()
