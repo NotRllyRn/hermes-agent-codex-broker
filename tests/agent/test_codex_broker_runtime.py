@@ -64,8 +64,8 @@ def test_auxiliary_codex_never_reads_native_credentials(
     )
     monkeypatch.setattr(
         auxiliary_client,
-        "_read_codex_access_token",
-        lambda: pytest.fail("native token file was read"),
+        "_resolve_codex_credential_and_base",
+        lambda: pytest.fail("native Codex credentials were read"),
     )
     assert auxiliary_client._build_codex_client("gpt-5.4") == (None, None)
     assert auxiliary_client.resolve_provider_client(
