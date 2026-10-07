@@ -42,9 +42,11 @@ def _ps(command: str, timeout: int = 60) -> str:
 
 
 def _creation_time(pid: int) -> str:
-    out = _ps(f"$c = (Get-CimInstance Win32_Process -Filter 'ProcessId={pid}').CreationDate; "
-              "[DateTimeOffset]::new($c.ToUniversalTime()).ToUnixTimeMilliseconds().ToString()")
-    return f'{int(out) / 1000:.3f}'
+    # Real native process identity, without a new PowerShell/CIM host per assertion.
+    # psutil uses limited-query GetProcessTimes on Windows, including SYSTEM pids.
+    import psutil
+
+    return f'{psutil.Process(pid).create_time():.3f}'
 
 
 def _alive(pid: int) -> bool:

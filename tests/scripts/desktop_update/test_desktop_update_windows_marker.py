@@ -17,7 +17,7 @@ import pytest
 
 from tests.installation_launcher_fixture import publish_fixture_launcher
 from tests.scripts.desktop_update.legacy_desktop_reader import legacy_read
-from tests.scripts.desktop_update.windows_handoff_support import _HeldLock
+from tests.scripts.desktop_update.windows_handoff_support import _HeldLock, _creation_time
 
 ROOT = Path(__file__).resolve().parent.parent.parent.parent
 SCRIPT = ROOT / 'scripts/desktop-update/windows.ps1'
@@ -42,17 +42,6 @@ def sleeper():
     yield proc
     proc.kill()
     proc.wait()
-
-
-def _creation_time(pid: int) -> str:
-    # Limited query rights (what Python/Rust readers use): works for every process.
-    out = subprocess.run(
-        ['powershell', '-NoProfile', '-Command',
-         f"$c = (Get-CimInstance Win32_Process -Filter 'ProcessId={pid}').CreationDate; "
-         "[DateTimeOffset]::new($c.ToUniversalTime()).ToUnixTimeMilliseconds().ToString()"],
-        capture_output=True, text=True, timeout=60, check=True,
-    ).stdout.strip()
-    return f'{int(out) / 1000:.3f}'
 
 
 def _protected_pid() -> int:
@@ -87,10 +76,10 @@ def _dead_pid() -> int:
     return proc.pid
 
 
-def _run(home: Path, *args: str, install: Path | None = None, timeout: int = 120):
+def _run(home: Path, *args: str, install: Path | None = None, timeout: int = 120, **extra_env: str):
     command = ['powershell', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', str(SCRIPT),
                '-InstallRoot', str(install or home / 'hermes-agent'), '-NoUi', *args]
-    env = {**os.environ, 'HERMES_HOME': str(home), 'HERMES_RUNTIME_DIR': str(home / 'empty-store')}
+    env = {**os.environ, 'HERMES_HOME': str(home), 'HERMES_RUNTIME_DIR': str(home / 'empty-store'), **extra_env}
     proc = subprocess.Popen(command, cwd=home, env=env,
                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     try:
@@ -242,8 +231,9 @@ def test_desktop_that_never_exits_is_not_relaunched_over(
     # The Desktop's bridge claim, which a -DesktopPid hand-off adopts (A4).
     (home / MARKER).write_bytes(f'{sleeper.pid}\n{int(time.time())}\nct:{_creation_time(sleeper.pid)}\n'.encode())
     relaunch = Path(os.environ.get('SystemRoot', r'C:\Windows')) / 'System32' / 'hostname.exe'
+    # Exercise the same fail-closed gate without spending its production 150s budget.
     _, code, out = _run(home, '-DesktopPid', str(sleeper.pid), '-RelaunchExe', str(relaunch),
-                        install=install, timeout=180)
+                        install=install, HERMES_UPDATE_DESKTOP_EXIT_SECONDS='3')
     assert code == 4, out
     log = (home / 'logs/desktop-update-handoff.log').read_text(encoding='utf-8-sig')
     assert 'relaunching desktop' not in log, log
