@@ -152,7 +152,10 @@ def handle_api_error(
         reason=classified.reason.value,
     )
 
-    broker = getattr(agent, "_codex_broker", None)
+    # Read the concrete instance field, not a synthetic ``__getattr__`` value from
+    # lightweight recovery doubles/proxies. Broker mode is active only after agent
+    # initialization explicitly installs a broker object.
+    broker = vars(agent).get("_codex_broker")
     if broker is not None:
         from agent.codex_broker import CodexBrokerError
 
