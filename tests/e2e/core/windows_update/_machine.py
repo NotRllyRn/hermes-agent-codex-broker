@@ -208,6 +208,9 @@ class Machine:
             "APPDATA": str(roaming),
             "GIT_CONFIG_GLOBAL": str(self.root / "e2e-gitconfig"),
             "NO_COLOR": "1",
+            # Fake-user environments deliberately omit CI. Keep child build output in
+            # transcripts anyway, including the command that stalls before a timeout.
+            "HERMES_VERBOSE": "1",
             # state.db lives under tmp; under a pytest ancestor the live-DB guard would refuse it.
             "HERMES_STATE_DB_GUARD_BYPASS": "1",
         })
