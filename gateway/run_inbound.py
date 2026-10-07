@@ -1283,6 +1283,25 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
             return event, source, is_internal
 
     async def _handle_message(self, event: MessageEvent) -> Optional[str]:
+        callback_id = getattr(event, "_callback_id", None)
+        if callback_id is None:
+            return await self._handle_message_inner(event)
+        ledger = self._callback_ledger_for_runner()
+        status = "rejected"
+        try:
+            await self._validate_callback(event)
+            ledger.set_status(callback_id, "running")
+            status = "uncertain"
+            result = await self._handle_message_inner(event)
+            status = "completed" if getattr(event, "_callback_processed", False) else "rejected"
+            return result
+        finally:
+            ledger.set_status(callback_id, status)
+            done = getattr(event, "_callback_done", None)
+            if done is not None and not done.done():
+                done.set_result(status)
+
+    async def _handle_message_inner(self, event: MessageEvent) -> Optional[str]:
         """Handle an incoming message from any platform: auth → command check → running-agent
         interrupt → get/create session → build context → run agent → return response."""
         from gateway.run import _AGENT_PENDING_SENTINEL
@@ -1767,6 +1786,10 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
 
     async def _mark_durable_active_turn(self, event: "MessageEvent", session_key: str) -> bool:
         """Persist the exact resolved routing key for this running turn."""
+        # Callback recovery is owned by its ledger: generic auto-resume would replay
+        # an uncertain callback outside its idempotency boundary.
+        if getattr(event, "_callback_id", None) is not None:
+            return False
         try:
             token = await self.async_session_store.mark_turn_active(session_key)
         except Exception as exc:

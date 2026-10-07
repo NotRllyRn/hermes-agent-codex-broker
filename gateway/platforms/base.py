@@ -4035,6 +4035,12 @@ class BasePlatformAdapter(ABC):
             raise
         await self._drain_pending_after_session_command(session_key, command_guard)
 
+    def callback_slot_available(self, session_key: str) -> bool:
+        """Whether a durable internal callback can enter without displacing human work."""
+        return (session_key not in self._active_sessions
+                and session_key not in self._pending_messages
+                and session_key not in self._session_tasks)
+
     async def handle_message(self, event: MessageEvent) -> None:
         """Process an incoming message; returns quickly by spawning a background
         task so new messages (and interrupts) can arrive while an agent runs."""

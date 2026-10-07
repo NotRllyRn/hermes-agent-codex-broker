@@ -2211,6 +2211,8 @@ class GatewayTurnMixin:
                 message_type=event.message_type,
                 scheduled_heartbeat=bool(getattr(event, "_heartbeat_session_id", None)),
             )
+            if getattr(event, "_callback_id", None) is not None:
+                event._callback_processed = True
             _turn_seconds = time.monotonic() - _turn_started_monotonic
 
             # A queued (/queue) chain answered the LAST message of the chain, so the outer final

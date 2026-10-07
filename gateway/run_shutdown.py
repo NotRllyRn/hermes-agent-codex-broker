@@ -878,6 +878,10 @@ class GatewayShutdownMixin:
         for _sk, _agent in list(self._running_agents.items()):
             if _agent is _AGENT_PENDING_SENTINEL:
                 continue
+            state = self._peek_session_state(_sk)
+            if state is not None and getattr(state.turn.event, "_callback_id", None) is not None:
+                # The callback ledger owns interrupted-callback recovery, not generic resume.
+                continue
             with _log_suppressed(logging.DEBUG, "%s failed for %s: %s", log_prefix, _sk):
                 await self.async_session_store.mark_resume_pending(_sk, reason)
                 marked.append(_sk)
