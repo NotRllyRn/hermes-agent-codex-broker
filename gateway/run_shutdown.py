@@ -168,7 +168,10 @@ def _effective_watchdog_leash(runner: object) -> float:
     return effective_stop_watchdog_delay(runner, resolve_shutdown_watchdog_delay(effective_stop_drain_timeout(runner)))
 
 
-class GatewayShutdownMixin:
+from gateway.run_shutdown_resume import GatewayShutdownResumeMixin
+
+
+class GatewayShutdownMixin(GatewayShutdownResumeMixin):
     """Stop/drain/restart, scale-to-zero and active-work accounting methods for GatewayRunner."""
 
     @dataclasses.dataclass
@@ -866,26 +869,6 @@ class GatewayShutdownMixin:
     def _shutdown_interrupt_reason(self) -> str:
         from gateway.run import _INTERRUPT_REASON_GATEWAY_RESTART, _INTERRUPT_REASON_GATEWAY_SHUTDOWN
         return _INTERRUPT_REASON_GATEWAY_RESTART if self._restart_requested else _INTERRUPT_REASON_GATEWAY_SHUTDOWN
-
-    async def _mark_running_sessions_resume_pending(self, log_prefix: str) -> list:
-        """Mark every non-pending running session resume_pending; returns the keys marked."""
-        from gateway.run import _AGENT_PENDING_SENTINEL
-        reason = "restart_timeout" if self._restart_requested else "shutdown_timeout"
-        marked: list[str] = []
-        # Pre-mark sessions as resume_pending BEFORE the drain wait. If the process is killed by the service
-        # manager during the drain, the durable marker is already written so the next gateway boot can
-        # recover in-flight sessions (#27856).
-        for _sk, _agent in list(self._running_agents.items()):
-            if _agent is _AGENT_PENDING_SENTINEL:
-                continue
-            state = self._peek_session_state(_sk)
-            if state is not None and getattr(state.turn.event, "_callback_id", None) is not None:
-                # The callback ledger owns interrupted-callback recovery, not generic resume.
-                continue
-            with _log_suppressed(logging.DEBUG, "%s failed for %s: %s", log_prefix, _sk):
-                await self.async_session_store.mark_resume_pending(_sk, reason)
-                marked.append(_sk)
-        return marked
 
     def _restart_notification_allowed(self, platform: Platform) -> bool:
         """False when the platform config sets ``gateway_restart_notification=false``."""

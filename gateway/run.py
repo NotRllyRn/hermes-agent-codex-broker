@@ -2202,7 +2202,6 @@ from gateway.restart import (
     DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT,
     DEFAULT_GATEWAY_SIGNAL_INTERRUPT_GRACE_TIMEOUT)
 
-
 logger = logging.getLogger(__name__)
 
 

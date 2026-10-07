@@ -460,12 +460,16 @@ def test_boot_recovery_runs_before_resume_turns_and_queued_inbound(monkeypatch):
     async def finish_startup_restore():
         order.append("drain inbound")
 
+    async def start_callback_recovery():
+        order.append("callback recovery")
+
     runner = SimpleNamespace(
         _start_post_connect_services=noop, _await_startup_boot_sends=noop,
         _schedule_resume_pending_sessions=lambda: order.append("resume"),
         _finish_startup_restore=finish_startup_restore,
+        _start_callback_recovery=start_callback_recovery,
         _send_session_db_warning_notifications=noop, _spawn_supervised=lambda *a, **k: None,
     )
     asyncio.run(gateway_run.GatewayRunner._start_finish_wiring(runner, 0))
 
-    assert order == ["recover", "resume", "drain inbound"]
+    assert order == ["recover", "resume", "drain inbound", "callback recovery"]

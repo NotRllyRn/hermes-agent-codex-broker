@@ -67,7 +67,10 @@ def strip_discord_triggering_note(event: Any, message_text: Any) -> Any:
     return message_text[len(prefix):] if message_text.startswith(prefix) else message_text
 
 
-class GatewayInboundMixin(GatewayPluginInjectionMixin):
+from gateway.run_turn_markers import GatewayTurnMarkersMixin
+
+
+class GatewayInboundMixin(GatewayPluginInjectionMixin, GatewayTurnMarkersMixin):
     """Inbound message pipeline (_handle_message, text/media preparation, durable-turn markers, plugin injection) for GatewayRunner."""
 
     async def _hm_pre_gateway_dispatch_hook(
@@ -1282,26 +1285,6 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
             logger.debug("FIFO orphan rescue pre-claim failed for %s", _quick_key, exc_info=True)
             return event, source, is_internal
 
-    async def _handle_message(self, event: MessageEvent) -> Optional[str]:
-        callback_id = getattr(event, "_callback_id", None)
-        if callback_id is None:
-            return await self._handle_message_inner(event)
-        ledger = self._callback_ledger_for_runner()
-        status = "rejected"
-        try:
-            await self._validate_callback(event)
-            ledger.set_status(callback_id, "running")
-            status = "uncertain"
-            result = await self._handle_message_inner(event)
-            status = ("completed" if getattr(event, "_callback_processed", False) else
-                      "uncertain" if getattr(event, "_callback_execution_started", False) else "rejected")
-            return result
-        finally:
-            ledger.set_status(callback_id, status)
-            done = getattr(event, "_callback_done", None)
-            if done is not None and not done.done():
-                done.set_result(status)
-
     async def _handle_message_inner(self, event: MessageEvent) -> Optional[str]:
         """Handle an incoming message from any platform: auth → command check → running-agent
         interrupt → get/create session → build context → run agent → return response."""
@@ -1784,53 +1767,6 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
         if paths:
             state.persistent.native_image_paths = []
         return paths
-
-    async def _mark_durable_active_turn(self, event: "MessageEvent", session_key: str) -> bool:
-        """Persist the exact resolved routing key for this running turn."""
-        # Callback recovery is owned by its ledger: generic auto-resume would replay
-        # an uncertain callback outside its idempotency boundary.
-        if getattr(event, "_callback_id", None) is not None:
-            return False
-        try:
-            token = await self.async_session_store.mark_turn_active(session_key)
-        except Exception as exc:
-            logger.warning("Could not persist active-turn marker for %s: %s", session_key, exc)
-            return False
-        if not token:
-            return False
-        # Private event attributes are process-local ownership state: keep the token out of public
-        # metadata, transcripts, and platform payloads.
-        event._gateway_active_turn_session_key = session_key
-        event._gateway_active_turn_token = token
-        return True
-
-    async def _clear_durable_active_turn(self, event: "MessageEvent") -> bool:
-        """Best-effort CAS clear of the marker owned by *event* (3 attempts; never blocks agent/lease
-        release — a stale marker is bounded by the agent timeout and clean-start discard)."""
-        session_key = getattr(event, "_gateway_active_turn_session_key", None)
-        token = getattr(event, "_gateway_active_turn_token", None)
-        try:
-            if not session_key or not token:
-                return False
-            last_error: Optional[Exception] = None
-            for attempt in range(1, 4):
-                try:
-                    return bool(await self.async_session_store.clear_turn_active(session_key, token))
-                except Exception as exc:
-                    last_error = exc
-                    if attempt < 3:
-                        logger.debug(
-                            "Retrying active-turn marker cleanup for %s (%d/3): %s",
-                            session_key, attempt, exc,
-                        )
-            logger.warning(
-                "Could not clear active-turn marker for %s after 3 attempts: %s", session_key, last_error,
-            )
-            return False
-        finally:
-            for attr in ("_gateway_active_turn_session_key", "_gateway_active_turn_token"):
-                with suppress(AttributeError):
-                    delattr(event, attr)
 
     def _decide_image_input_mode(
         self, *, source: Optional[SessionSource] = None, session_key: Optional[str] = None,

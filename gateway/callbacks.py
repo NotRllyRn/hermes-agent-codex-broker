@@ -56,6 +56,36 @@ class CallbackLedger:
 
 
 class GatewayCallbacksMixin:
+    async def _handle_message(self, event: MessageEvent):
+        callback_id = getattr(event, "_callback_id", None)
+        if callback_id is None:
+            return await self._handle_message_inner(event)
+        ledger = self._callback_ledger_for_runner()
+        status = "rejected"
+        def finish(delivered):
+            if ledger.receipt(callback_id)['status'] != 'running':
+                return
+            outcome = "completed" if delivered and getattr(event, "_callback_processed", False) else "uncertain"
+            ledger.set_status(callback_id, outcome)
+            done = getattr(event, "_callback_done", None)
+            if done is not None and not done.done():
+                done.set_result(outcome)
+        event._callback_finish = finish
+        try:
+            await self._validate_callback(event)
+            ledger.set_status(callback_id, "running")
+            status = "uncertain"
+            result = await self._handle_message_inner(event)
+            status = ("running" if getattr(event, "_callback_processed", False) else
+                      "uncertain" if getattr(event, "_callback_execution_started", False) else "rejected")
+            return result
+        finally:
+            ledger.set_status(callback_id, status)
+            done = getattr(event, "_callback_done", None)
+            if status != "running" and done is not None and not done.done():
+                done.set_result(status)
+
+
     def _callback_ledger_for_runner(self):
         ledger = getattr(self, '_callback_ledger', None)
         if ledger is None:
@@ -67,7 +97,7 @@ class GatewayCallbacksMixin:
 
         if not isinstance(event, MessageEvent) or event.internal is not True or event.allow_gateway_control is not False:
             raise ValueError('callback requires internal=True, allow_gateway_control=False')
-        allowed = {'gateway_session_key', 'gateway_session_id', 'gateway_session_strict', 'notification_category'}
+        allowed = {'gateway_session_key', 'gateway_session_id', 'gateway_session_strict', 'notification_category', 'gateway_transport_profile'}
         if set(event.metadata) - allowed or event.metadata.get('gateway_session_strict') is not True:
             raise ValueError('callback requires strict routing metadata only')
         if event.metadata.get('notification_category', 'result') not in {'result', 'diagnostic'}:
@@ -87,6 +117,9 @@ class GatewayCallbacksMixin:
         if entry is None or entry.session_id != sid or entry.origin is None or entry.origin.to_dict() != source.to_dict():
             raise ValueError('callback original session id/source/profile is no longer current')
         multiplexed = getattr(getattr(self, 'config', None), 'multiplex_profiles', False)
+        expected_transport = event.metadata.get('gateway_transport_profile')
+        if expected_transport is not None and expected_transport != (getattr(entry, 'transport_profile', None) or 'default'):
+            raise ValueError('callback original receiving bot has changed')
         if multiplexed:
             transport = getattr(entry, 'transport_profile', None)
             if transport is None:
@@ -135,33 +168,37 @@ class GatewayCallbacksMixin:
 
     async def _dispatch_callbacks(self):
         ledger = self._callback_ledger_for_runner()
+        inflight = {}
         while True:
+            inflight = {key: done for key, done in inflight.items() if not done.done()}
             rows = ledger.pending()
-            if not rows:
+            if not rows and not inflight:
                 return
-            callback_id, payload = rows[0]
-            data = json.loads(payload)
-            event = MessageEvent(text=data['text'], source=SessionSource.from_dict(data['source']),
-                                 internal=True, allow_gateway_control=False, metadata=data['metadata'])
-            event._callback_transport_profile = data.get('transport_profile')
-            try:
-                adapter = await self._validate_callback(event)
-            except WakeNotAccepted:
-                await asyncio.sleep(1)
-                continue
-            except ValueError:
-                ledger.set_status(callback_id, 'rejected')
-                continue
-            key = event.metadata['gateway_session_key']
-            # Do not occupy/merge the adapter's human pending slot. Claim via the ordinary
-            # adapter boundary only after the original turn and its outbound cleanup finish.
-            if not adapter.callback_slot_available(key) or self._is_session_running(key):
-                await asyncio.sleep(0.1)
-                continue
-            event._callback_id = callback_id
-            event._callback_done = asyncio.get_running_loop().create_future()
-            await adapter.handle_message(event)
-            if not event._gateway_accepted:
-                await asyncio.sleep(0.1)
-                continue
-            await event._callback_done
+            for callback_id, payload in rows:
+                if callback_id in inflight:
+                    continue
+                done = await self._dispatch_callback(callback_id, payload)
+                if done is not None:
+                    inflight[callback_id] = done
+            await asyncio.sleep(0.1)
+
+    async def _dispatch_callback(self, callback_id, payload):
+        data = json.loads(payload)
+        event = MessageEvent(text=data['text'], source=SessionSource.from_dict(data['source']),
+                             internal=True, allow_gateway_control=False, metadata=data['metadata'])
+        event._callback_transport_profile = data.get('transport_profile')
+        try:
+            adapter = await self._validate_callback(event)
+        except WakeNotAccepted:
+            return None
+        except ValueError:
+            self._callback_ledger_for_runner().set_status(callback_id, 'rejected')
+            return None
+        key = event.metadata['gateway_session_key']
+        # Keep callbacks out of the human pending slot; unrelated idle lanes still drain.
+        if not adapter.callback_slot_available(key) or self._is_session_running(key):
+            return None
+        event._callback_id = callback_id
+        event._callback_done = asyncio.get_running_loop().create_future()
+        await adapter.handle_message(event)
+        return event._callback_done if event._gateway_accepted else None

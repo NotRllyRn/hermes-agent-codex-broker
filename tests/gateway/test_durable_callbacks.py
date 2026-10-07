@@ -152,6 +152,7 @@ class Runner(GatewayCallbacksMixin, GatewayInboundMixin):
     async def deliver(self, event):
         event._gateway_accepted = True
         await self._handle_message(event)
+        event._callback_finish(True)
 
     async def _handle_message_inner(self, event):
         self.seen.append(event.text)
@@ -178,6 +179,34 @@ async def test_busy_then_complete_and_duplicate(tmp_path):
     assert runner.seen == ['completion']
     assert (await runner.get_callback_receipt('one'))['status'] == 'completed'
     assert await runner.get_callback_receipt('missing') is None
+
+
+@pytest.mark.asyncio
+async def test_busy_lane_does_not_block_unrelated_idle_lane(tmp_path):
+    runner = Runner(tmp_path)
+    idle_done = asyncio.Event()
+    original_validate = runner._validate_callback
+    async def validate(event):
+        adapter = await original_validate(event)
+        adapter.callback_slot_available = lambda key: event.text == 'idle' or not runner.active
+        return adapter
+    original_deliver = runner.deliver
+    async def deliver(event):
+        await original_deliver(event)
+        if event.text == 'idle':
+            idle_done.set()
+    runner._validate_callback = validate
+    runner.adapter.handle_message = deliver
+    runner._is_session_running = lambda key: False
+    await runner.admit_callback('busy', runner.event())
+    idle = runner.event()
+    idle.text = 'idle'
+    await runner.admit_callback('idle', idle)
+    await asyncio.wait_for(idle_done.wait(), 5)
+    assert runner.seen == ['idle']
+    runner.active = False
+    await asyncio.wait_for(runner._callback_dispatcher, 5)
+    assert runner.seen == ['idle', 'completion']
 
 
 @pytest.mark.asyncio
@@ -242,16 +271,14 @@ async def test_shutdown_does_not_mark_callback_for_auto_resume(tmp_path):
 async def test_invalid_callbacks(tmp_path, change):
     runner = Runner(tmp_path)
     event = runner.event()
-    if change == 'profile':
-        event.source = SessionSource(platform=Platform.TELEGRAM, chat_id='123', user_id='456', profile='other')
-    elif change == 'strict':
-        event.metadata['gateway_session_strict'] = 1
-    elif change == 'human':
-        event.user_id = '456'
-    elif change == 'control':
-        event.allow_gateway_control = True
-    else:
-        event.metadata['untrusted'] = True
+    mutations = {
+        'profile': lambda: setattr(event, 'source', SessionSource(platform=Platform.TELEGRAM, chat_id='123', user_id='456', profile='other')),
+        'strict': lambda: event.metadata.update(gateway_session_strict=1),
+        'human': lambda: setattr(event, 'user_id', '456'),
+        'control': lambda: setattr(event, 'allow_gateway_control', True),
+        'metadata': lambda: event.metadata.update(untrusted=True),
+    }
+    mutations[change]()
     with pytest.raises(ValueError):
         await runner.admit_callback('one', event)
 
