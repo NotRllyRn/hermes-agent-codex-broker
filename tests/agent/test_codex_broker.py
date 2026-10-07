@@ -54,7 +54,8 @@ def test_environment_is_disabled_or_fails_closed(monkeypatch: pytest.MonkeyPatch
         CodexBrokerLeaseManager.from_environment()
 
 
-def test_configuration_is_verified_and_persisted(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+@pytest.mark.parametrize('encoding', ['utf-8', 'utf-8-sig'])
+def test_configuration_is_verified_and_persisted(monkeypatch: pytest.MonkeyPatch, tmp_path, encoding) -> None:
     for name in (
         "HERMES_CODEX_BROKER_URL",
         "HERMES_CODEX_BROKER_CLIENT_KEY",
@@ -64,7 +65,7 @@ def test_configuration_is_verified_and_persisted(monkeypatch: pytest.MonkeyPatch
     ca = tmp_path / "ca.crt"
     ca.write_text("test")
     env_file = tmp_path / ".env"
-    env_file.write_text("EXISTING=yes\nHERMES_CODEX_BROKER_URL=old\n")
+    env_file.write_text("EXISTING=yes\nHERMES_CODEX_BROKER_URL=old\n", encoding=encoding)
     monkeypatch.setattr("agent.codex_broker.httpx.get", lambda *_a, **_k: Response(200, {}))
 
     values = {"url": "https://broker.test", "token": "cbk_test", "ca": str(ca)}
@@ -74,6 +75,7 @@ def test_configuration_is_verified_and_persisted(monkeypatch: pytest.MonkeyPatch
     assert env_file.stat().st_mode & 0o777 == 0o600
     text = env_file.read_text()
     assert "EXISTING=yes" in text
+    assert not text.startswith('\ufeff')
     assert text.count("HERMES_CODEX_BROKER_URL=") == 1
     assert 'HERMES_CODEX_BROKER_CLIENT_KEY="cbk_test"' in text
 

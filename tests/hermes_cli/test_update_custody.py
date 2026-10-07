@@ -545,9 +545,15 @@ def test_a_ctrl_c_keeps_custody_until_a_detached_writer_is_gone(repo, tmp_path, 
     owner = subprocess.Popen([sys.executable, "-c", caller], start_new_session=True,
                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     deadline = time.monotonic() + 20
-    while not (beat.exists() and ready.exists()) and time.monotonic() < deadline:
+    writer_pid = None
+    while time.monotonic() < deadline:
+        if beat.exists() and ready.exists():
+            fields = beat.read_text(encoding="utf-8").split()
+            if fields:
+                writer_pid = int(fields[0])
+                break
         time.sleep(0.1)
-    assert beat.exists() and ready.exists(), "the build never started"
+    assert writer_pid is not None, "the build never started"
     os.killpg(owner.pid, signal.SIGINT)  # windows-footgun: ok - Linux-only test
     owner.wait(timeout=10)
     contender = ul.UpdateLock(path=tmp_path / "next-marker", install_root=repo)
@@ -562,7 +568,7 @@ def test_a_ctrl_c_keeps_custody_until_a_detached_writer_is_gone(repo, tmp_path, 
     finally:
         contender.release()
         with contextlib.suppress(ProcessLookupError, ValueError):
-            os.kill(int(beat.read_text(encoding="utf-8").split()[0]), signal.SIGKILL)  # windows-footgun: ok - Linux-only test
+            os.kill(writer_pid, signal.SIGKILL)  # windows-footgun: ok - Linux-only test
 
 
 @pytest.mark.skipif(not sys.platform.startswith("linux"), reason="POSIX sessions + /proc")

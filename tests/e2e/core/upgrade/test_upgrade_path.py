@@ -131,19 +131,40 @@ def _upgrade_prerequisites() -> None:
 IMPORT_PROBE = r"""
 import importlib, subprocess, sys, tomllib
 from pathlib import Path
+from packaging.requirements import Requirement
+from packaging.utils import canonicalize_name
 root, base = Path(sys.argv[1]), sys.argv[2]
 cfg = tomllib.load(open(root / "pyproject.toml", "rb"))
 tops = [p for p in cfg["tool"]["setuptools"]["packages"]["find"]["include"] if "*" not in p]
 added = subprocess.run(["git", "-C", str(root), "diff", "--name-only", "--diff-filter=A", base, "HEAD", "--",
                         *[f"{t}/*.py" for t in tops]], capture_output=True, text=True).stdout.split()
-added = [a[:-3].replace("/", ".") for a in added if "/tests/" not in a and not a.endswith("__init__.py")][:3]
+added = [a[:-3].replace("/", ".") for a in added if "/tests/" not in a and not a.endswith("__init__.py")]
+required = tops + ["hermes_cli.main", "run_agent", "hermes_state"]
+# ACP's SDK is optional in PM's base install. Only tolerate its absent top-level
+# import in added ACP modules, and never if the pulled manifest requires it here.
+def is_acp(req):
+    return canonicalize_name(req.name) == "agent-client-protocol"
+core_acp = [Requirement(r) for r in cfg["project"].get("dependencies", []) if is_acp(Requirement(r))]
+optional_acp = any(is_acp(Requirement(r)) for reqs in cfg["project"].get("optional-dependencies", {}).values()
+                   for r in reqs)
+acp_optional_here = (all(r.marker is not None and not r.marker.evaluate() for r in core_acp)
+                     if core_acp else optional_acp)
 bad = []
-for name in tops + ["hermes_cli.main", "run_agent", "hermes_state"] + added:
+sampled = 0
+for name in required + added:
+    if name not in required and sampled >= 3:
+        break
     try:
         mod = importlib.import_module(name)
     except BaseException as exc:
+        if (name not in required and name.startswith("acp_adapter.") and acp_optional_here
+                and isinstance(exc, ModuleNotFoundError) and exc.name == "acp"):
+            print(f"{name}: optional ACP SDK absent; sampling another added module")
+            continue
         bad.append(f"{name}: {type(exc).__name__}: {exc}")
         continue
+    if name not in required:
+        sampled += 1
     where = Path(getattr(mod, "__file__", None) or str(list(getattr(mod, "__path__", [""]))[0])).resolve()
     if where.is_relative_to(root.resolve()):
         continue  # N-1's editable venv serves the source tree directly.

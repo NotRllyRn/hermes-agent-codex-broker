@@ -82,7 +82,7 @@ def save_broker_configuration(values: dict[str, str], env_file: Path) -> None:
         raise CodexBrokerError("URL, client key, and CA certificate must all be configured")
     manager = CodexBrokerLeaseManager(values["url"].strip(), values["token"].strip(), values["ca"].strip())
     manager.health()
-    existing = env_file.read_text(encoding="utf-8") if env_file.exists() else ""
+    existing = env_file.read_text(encoding="utf-8-sig") if env_file.exists() else ""
     replacements = {name: json.dumps(values[field].strip()) for field, name in _BROKER_ENV.items()}
     lines: list[str] = []
     seen: set[str] = set()

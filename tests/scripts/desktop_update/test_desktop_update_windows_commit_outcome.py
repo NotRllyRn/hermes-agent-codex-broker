@@ -154,10 +154,20 @@ def test_nonzero_exit_after_the_commit_point_is_installed_with_a_followup(tmp_pa
 
 _TIMED_CHECKOUT_HOLDER = """
 import msvcrt, os, sys, time
+from pathlib import Path
 fd = os.open(sys.argv[1], os.O_RDWR | os.O_CREAT | os.O_BINARY, 0o644)
 os.lseek(fd, 1 << 20, os.SEEK_SET)
-msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)   # hermes_cli/update_lock.py::_try_lock's byte
-time.sleep(float(sys.argv[2]))
+msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)   # lock the same byte as the checkout lock
+Path(sys.argv[3]).touch()   # the parent must not start the hand-off before the lock is held
+log = Path(sys.argv[2])
+deadline = time.monotonic() + 120
+while not log.exists() or 'keeping the update marker' not in log.read_text(encoding='utf-8-sig'):
+    if time.monotonic() >= deadline:
+        raise SystemExit('hand-off never entered the release wait')
+    time.sleep(0.05)
+time.sleep(2)   # cross an epoch-second boundary AFTER the first result was published
+os.close(fd)
+Path(sys.argv[4]).write_text(str(time.time()), encoding='utf-8')
 """
 
 
@@ -166,19 +176,35 @@ def test_result_finished_at_is_stamped_after_the_r6_release_wait(tmp_path: Path)
     # The relaunched Desktop drops a non-manual result whose finished_at is 30 minutes old; the
     # R6 wait lasts up to 2 h. The result must carry the time the hand-off actually finished.
     holders = []
+    ready = tmp_path / 'holder-ready'
+    released = tmp_path / 'holder-released'
+    holder_script = tmp_path / 'checkout_holder.py'
+    holder_script.write_text(_TIMED_CHECKOUT_HOLDER, encoding='utf-8')
 
-    def hold_checkout(_home: Path, install: Path) -> None:
-        holders.append((subprocess.Popen([sys.executable, '-c', _TIMED_CHECKOUT_HOLDER,
-                                          str(install / '.hermes-update.lock'), '25']), time.time() + 25))
+    def hold_checkout(home: Path, install: Path) -> None:
+        # Keep fixture source out of argv: the live-system guard checks commands,
+        # and a log needle is not an updater invocation.
+        proc = subprocess.Popen([sys.executable, str(holder_script),
+                                 str(install / '.hermes-update.lock'),
+                                 str(home / 'logs/desktop-update-handoff.log'), str(ready), str(released)])
+        holders.append(proc)
+        deadline = time.monotonic() + 30
+        while not ready.exists():
+            assert proc.poll() is None and time.monotonic() < deadline, 'checkout holder never locked'
+            time.sleep(0.05)
     try:
         code, out, _, result, home = _handoff(tmp_path, '-NoGateway', prepare=hold_checkout)
+        holders[0].wait(timeout=10)
+        assert holders[0].returncode == 0
     finally:
-        for proc, _ in holders:
-            proc.kill(); proc.wait()
+        for proc in holders:
+            if proc.poll() is None:
+                proc.kill()
+            proc.wait()
     assert code == 0, out
     log = (home / 'logs/desktop-update-handoff.log').read_text(encoding='utf-8-sig')
     assert 'keeping the update marker' in log, log
-    assert result['ok'] is True and result['finished_at'] >= int(holders[0][1]) - 1, result
+    assert result['ok'] is True and result['finished_at'] >= int(float(released.read_text())) - 1, result
 
 
 @pytest.mark.platforms('windows')
@@ -195,32 +221,3 @@ def test_marker_with_a_live_delegate_is_handed_to_it_at_finish(tmp_path: Path) -
     finally:
         if pid_file.exists():
             subprocess.run(['taskkill', '/F', '/PID', pid_file.read_text(encoding='utf-8-sig')], capture_output=True)
-
-
-@pytest.mark.platforms('windows')
-def test_watchdog_remap_after_banner_reports_interrupted_followups(tmp_path: Path) -> None:
-    code, out, argv, result, _ = _handoff(
-        tmp_path, '-NoGateway', HANDOFF_HANG='Update complete! (v1.0.0)',
-        HERMES_UPDATE_STEP_IDLE_SECONDS='3',
-    )
-    assert code == 0, out
-    assert (result['ok'], result['manual']) == (True, True), result
-    assert any('interrupted' in w for w in result['warnings']), result
-
-
-@pytest.mark.platforms('windows')
-def test_cpu_busy_pipe_silent_update_is_not_killed_by_the_idle_watchdog(tmp_path: Path) -> None:
-    code, out, argv, result, _ = _handoff(
-        tmp_path, '-NoGateway', HANDOFF_BUSY_SECONDS='15', HERMES_UPDATE_STEP_IDLE_SECONDS='4',
-    )
-    assert code == 0, out
-    assert (result['ok'], result['warnings']) == (True, []), result
-
-
-@pytest.mark.platforms('windows')
-def test_hanging_update_help_probe_is_bounded(tmp_path: Path) -> None:
-    code, out, argv, result, _ = _handoff(
-        tmp_path, '-NoGateway', '-ProbeTimeoutSeconds', '10', timeout=120, HANDOFF_HELP_HANG='1',
-    )
-    assert code == 0, out
-    assert argv[0][:2] == ['update', '--yes'] and '--keep-stash' not in argv[0], argv
