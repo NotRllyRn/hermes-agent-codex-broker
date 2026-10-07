@@ -91,6 +91,9 @@ jobs:
           - name: Windows-only tests
             runner: windows-latest
             marker: windows
+            # Full native suite exceeds 30m on the standard runner; keep every
+            # file and its 300s watchdog, with the same lane budget as ARM64.
+            timeout: 60
           - name: Windows-only tests (arm64)
             runner: windows-11-arm
             marker: windows
