@@ -45,8 +45,8 @@ jobs:
   install-update:
     name: Windows install.ps1 + hermes update E2E
     runs-on: windows-latest
-    # A typical run is ~17 min; one slow runner took 28 min for the same work (run 36295230146).
-    timeout-minutes: 75
+    # Ten isolated installs run two at a time on standard Windows runners.
+    timeout-minutes: 120
     steps:
       - name: Checkout code
         uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
