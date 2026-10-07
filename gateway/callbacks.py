@@ -64,8 +64,7 @@ class GatewayCallbacksMixin:
         return ledger
 
     async def _validate_callback(self, event):
-        if getattr(getattr(self, 'config', None), 'multiplex_profiles', False):
-            raise ValueError('durable callbacks do not yet support multiplex profiles')
+
         if not isinstance(event, MessageEvent) or event.internal is not True or event.allow_gateway_control is not False:
             raise ValueError('callback requires internal=True, allow_gateway_control=False')
         allowed = {'gateway_session_key', 'gateway_session_id', 'gateway_session_strict', 'notification_category'}
@@ -84,11 +83,20 @@ class GatewayCallbacksMixin:
         source = event.source
         if not isinstance(source, SessionSource) or source.profile_route_rejected:
             raise ValueError('callback requires an original SessionSource')
-        if self._session_key_for_source(source) != key:
-            raise ValueError('callback source does not derive the original session key')
         entry = await self.async_session_store.lookup_by_session_key(key)
         if entry is None or entry.session_id != sid or entry.origin is None or entry.origin.to_dict() != source.to_dict():
             raise ValueError('callback original session id/source/profile is no longer current')
+        multiplexed = getattr(getattr(self, 'config', None), 'multiplex_profiles', False)
+        if multiplexed:
+            transport = getattr(entry, 'transport_profile', None)
+            if transport is None:
+                raise ValueError('callback requires persisted transport identity under multiplexing')
+            if hasattr(event, '_callback_transport_profile') and event._callback_transport_profile != transport:
+                raise ValueError('callback original receiving bot has changed')
+            event._callback_transport_profile = transport
+            event.source = source = self._restored_source(entry)
+        if self._session_key_for_source(source) != key:
+            raise ValueError('callback source does not derive the original session key')
         adapter = self._intake_adapter_for(source)
         from gateway.wake import adapter_supports_push
         if adapter is None:
@@ -102,7 +110,8 @@ class GatewayCallbacksMixin:
         if not isinstance(callback_id, str) or not callback_id or len(callback_id) > 256:
             raise ValueError('callback_id must be a nonempty string of at most 256 characters')
         await self._validate_callback(event)
-        payload = json.dumps({'text': event.text, 'source': event.source.to_dict(), 'metadata': event.metadata}, sort_keys=True, separators=(',', ':'))
+        payload = json.dumps({'text': event.text, 'source': event.source.to_dict(), 'metadata': event.metadata,
+                              'transport_profile': getattr(event, '_callback_transport_profile', None)}, sort_keys=True, separators=(',', ':'))
         ledger = self._callback_ledger_for_runner()
         status = ledger.admit(callback_id, payload)
         self._ensure_callback_dispatcher()
@@ -134,6 +143,7 @@ class GatewayCallbacksMixin:
             data = json.loads(payload)
             event = MessageEvent(text=data['text'], source=SessionSource.from_dict(data['source']),
                                  internal=True, allow_gateway_control=False, metadata=data['metadata'])
+            event._callback_transport_profile = data.get('transport_profile')
             try:
                 adapter = await self._validate_callback(event)
             except WakeNotAccepted:

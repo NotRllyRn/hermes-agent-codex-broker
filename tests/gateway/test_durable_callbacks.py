@@ -33,12 +33,31 @@ def test_recover_only_queued(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_multiplex_admission_fails_before_durable_queue(tmp_path):
+async def test_multiplex_requires_persisted_transport_before_durable_queue(tmp_path):
     runner = Runner(tmp_path)
     runner.config = SimpleNamespace(multiplex_profiles=True)
-    with pytest.raises(ValueError, match='multiplex'):
+    with pytest.raises(ValueError, match='persisted transport'):
         await runner.admit_callback('one', runner.event())
     assert await runner.get_callback_receipt('one') is None
+
+
+@pytest.mark.asyncio
+async def test_multiplex_restores_transport_and_rejects_changed_bot(tmp_path):
+    runner = Runner(tmp_path)
+    runner.config = SimpleNamespace(multiplex_profiles=True)
+    runner.entry.transport_profile = 'default'
+    restored = []
+    def restore(entry):
+        restored.append(entry.transport_profile)
+        return entry.origin
+    runner._restored_source = restore
+    await runner.admit_callback('one', runner.event())
+    await asyncio.sleep(0)
+    assert restored
+    runner.entry.transport_profile = 'other-bot'
+    runner.active = False
+    await runner._callback_dispatcher
+    assert (await runner.get_callback_receipt('one'))['status'] == 'rejected'
 
 
 @pytest.mark.asyncio
