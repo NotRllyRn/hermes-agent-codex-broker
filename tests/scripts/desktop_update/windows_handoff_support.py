@@ -46,7 +46,9 @@ def _creation_time(pid: int) -> str:
     # psutil uses limited-query GetProcessTimes on Windows, including SYSTEM pids.
     import psutil
 
-    return f'{psutil.Process(pid).create_time():.3f}'
+    # DateTimeOffset.ToUnixTimeMilliseconds truncates, rather than rounding.
+    milliseconds = int(psutil.Process(pid).create_time() * 1000)
+    return f'{milliseconds // 1000}.{milliseconds % 1000:03d}'
 
 
 def _alive(pid: int) -> bool:
