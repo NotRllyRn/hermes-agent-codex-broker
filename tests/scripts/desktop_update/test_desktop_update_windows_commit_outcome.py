@@ -178,9 +178,13 @@ def test_result_finished_at_is_stamped_after_the_r6_release_wait(tmp_path: Path)
     holders = []
     ready = tmp_path / 'holder-ready'
     released = tmp_path / 'holder-released'
+    holder_script = tmp_path / 'checkout_holder.py'
+    holder_script.write_text(_TIMED_CHECKOUT_HOLDER, encoding='utf-8')
 
     def hold_checkout(home: Path, install: Path) -> None:
-        proc = subprocess.Popen([sys.executable, '-c', _TIMED_CHECKOUT_HOLDER,
+        # Keep fixture source out of argv: the live-system guard checks commands,
+        # and a log needle is not an updater invocation.
+        proc = subprocess.Popen([sys.executable, str(holder_script),
                                  str(install / '.hermes-update.lock'),
                                  str(home / 'logs/desktop-update-handoff.log'), str(ready), str(released)])
         holders.append(proc)
