@@ -157,7 +157,7 @@ import msvcrt, os, sys, time
 from pathlib import Path
 fd = os.open(sys.argv[1], os.O_RDWR | os.O_CREAT | os.O_BINARY, 0o644)
 os.lseek(fd, 1 << 20, os.SEEK_SET)
-msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)   # hermes_cli/update_lock.py::_try_lock's byte
+msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)   # lock the same byte as the checkout lock
 Path(sys.argv[3]).touch()   # the parent must not start the hand-off before the lock is held
 log = Path(sys.argv[2])
 deadline = time.monotonic() + 120
